@@ -594,6 +594,8 @@ github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsampling
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.126.0/go.mod h1:I+g9XpxxxfmZJJceuJjvR9OsO9SqTNo80Nni/TYEaFQ=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.126.0 h1:Kts9jOeD2KC5kUUjwLQJmh3K8oknCjJjBBRL4Xue7I0=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.126.0/go.mod h1:3/HCT2yWXu2LjcM07Mzsc69to28ozuZSwyyhd5/f6Ms=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/fluentforwardreceiver v0.126.0 h1:gMW8DTOdLwjMmlkET2psotHtqPBI5tlgZa/toSo4AyI=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/fluentforwardreceiver v0.126.0/go.mod h1:2jrPvBg+ZVv8k3xI/691u58FzZa9ZIAGTTrxW0BEbFg=
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver v0.126.0 h1:8ngolxNQuK3vWDAJPsWLNYH5OxNMOXsnHaSnBBlRYvk=
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver v0.126.0/go.mod h1:8GZ26TZsvr+FTSZAgmiKUoeIR7dMZS4K89mtVlgVRtY=
 github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver v0.126.0 h1:EogtnTMMKb+UfHTAQB641MPXqR5RjRuoBs8QXg6IzkU=
@@ -619,6 +621,8 @@ github.com/paulmach/orb v0.11.1/go.mod h1:5mULz1xQfs3bmQm63QEJA6lNGujuRafwA5S/En
 github.com/paulmach/protoscan v0.2.1/go.mod h1:SpcSwydNLrxUGSDvXvO0P7g7AuhJ7lcKfDlhJCDw2gY=
 github.com/pelletier/go-toml/v2 v2.2.3 h1:YmeHyLY8mFWbdkNWwpr+qIL2bEqT0o95WSdkNHvL12M=
 github.com/pelletier/go-toml/v2 v2.2.3/go.mod h1:MfCQTFTvCcUyyvvwm1+G6H/jORL20Xlb6rzQu9GuUkc=
+github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c h1:dAMKvw0MlJT1GshSTtih8C2gDs04w8dReiOGXrGLNoY=
+github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c/go.mod h1:RqIHx9QI14HlwKwm98g9Re5prTQ6LdeRQn+gXJFxsJM=
 github.com/pierrec/lz4 v2.6.1+incompatible h1:9UY3+iC23yxF0UfGaYrGplQ+79Rg+h/q9FV9ix19jjM=
 github.com/pierrec/lz4 v2.6.1+incompatible/go.mod h1:pdkljMzZIN41W+lC3N2tnIh5sFi+IEE17M5jbnwPHcY=
 github.com/pierrec/lz4/v4 v4.1.22 h1:cKFw6uJDK+/gfw5BcDL0JL5aBsAFdsIT18eRtLj7VIU=
@@ -730,6 +734,8 @@ github.com/tidwall/tinylru v1.1.0 h1:XY6IUfzVTU9rpwdhKUF6nQdChgCdGjkMfLzbWyiau6I
 github.com/tidwall/tinylru v1.1.0/go.mod h1:3+bX+TJ2baOLMWTnlyNWHh4QMnFyARg2TLTQ6OFbzw8=
 github.com/tidwall/wal v1.1.8 h1:2qDSGdAdjaY3PEvHRva+9UFqgk+ef7cOiW1Qn5JH1y0=
 github.com/tidwall/wal v1.1.8/go.mod h1:r6lR1j27W9EPalgHiB7zLJDYu3mzW5BQP5KrzBpYY/E=
+github.com/tinylib/msgp v1.2.5 h1:WeQg1whrXRFiZusidTQqzETkRpGjFjcIhW6uqWH09po=
+github.com/tinylib/msgp v1.2.5/go.mod h1:ykjzy2wzgrlvpDCRc4LA8UXy6D8bzMSuAF3WD57Gok0=
 github.com/tklauser/go-sysconf v0.3.12 h1:0QaGUFOdQaIVdPgfITYzaTegZvdCjmYO52cSFAEVmqU=
 github.com/tklauser/go-sysconf v0.3.12/go.mod h1:Ho14jnntGE1fpdOqQEEaiKRpvIavV0hSfmBq8nJbHYI=
 github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+Fk=
