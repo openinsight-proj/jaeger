@@ -4,16 +4,22 @@
 package internal
 
 import (
+	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/servicegraphconnector"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/kafkaexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/sumologicexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/skywalkingreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/zipkinreceiver"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/connector"
@@ -92,6 +98,7 @@ func (b builders) build() (otelcol.Factories, error) {
 		jaegerreceiver.NewFactory(),
 		kafkareceiver.NewFactory(),
 		zipkinreceiver.NewFactory(),
+		skywalkingreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -108,6 +115,9 @@ func (b builders) build() (otelcol.Factories, error) {
 		kafkaexporter.NewFactory(),
 		prometheusexporter.NewFactory(),
 		// elasticsearch.NewFactory(),
+		loadbalancingexporter.NewFactory(),
+		prometheusremotewriteexporter.NewFactory(),
+		sumologicexporter.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -122,6 +132,7 @@ func (b builders) build() (otelcol.Factories, error) {
 		filterprocessor.NewFactory(),
 		// add-ons
 		adaptivesampling.NewFactory(),
+		transformprocessor.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -132,6 +143,7 @@ func (b builders) build() (otelcol.Factories, error) {
 		forwardconnector.NewFactory(),
 		// add-ons
 		spanmetricsconnector.NewFactory(),
+		servicegraphconnector.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
