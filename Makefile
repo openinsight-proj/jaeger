@@ -240,3 +240,7 @@ repro-check:
 	$(MAKE) clean
 	$(MAKE) build-all-platforms
 	shasum -b -a 256 --strict --check ./sha256sum.combined.txt
+
+.PHONY: genotelcontribcol
+genotelcontribcol: $(BUILDER)
+	otelcontribcol --skip-compilation --config cmd/otelcontribcol/builder-config.yaml
