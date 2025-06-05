@@ -17,6 +17,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/fluentforwardreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/skywalkingreceiver"
@@ -99,6 +100,7 @@ func (b builders) build() (otelcol.Factories, error) {
 		kafkareceiver.NewFactory(),
 		zipkinreceiver.NewFactory(),
 		skywalkingreceiver.NewFactory(),
+		fluentforwardreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
