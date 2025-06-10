@@ -113,18 +113,19 @@ type SpanReader struct {
 
 // SpanReaderParams holds constructor params for NewSpanReader
 type SpanReaderParams struct {
-	Client              func() es.Client
-	MaxSpanAge          time.Duration
-	MaxDocCount         int
-	IndexPrefix         cfg.IndexPrefix
-	SpanIndex           cfg.IndexOptions
-	ServiceIndex        cfg.IndexOptions
-	TagDotReplacement   string
-	ReadAliasSuffix     string
-	UseReadWriteAliases bool
-	RemoteReadClusters  []string
-	Logger              *zap.Logger
-	Tracer              trace.Tracer
+	Client                 func() es.Client
+	MaxSpanAge             time.Duration
+	MaxDocCount            int
+	IndexPrefix            cfg.IndexPrefix
+	SpanIndex              cfg.IndexOptions
+	ServiceIndex           cfg.IndexOptions
+	TagDotReplacement      string
+	ReadAliasSuffix        string
+	UseReadWriteAliases    bool
+	UseIndexSuffixTemplate bool
+	RemoteReadClusters     []string
+	Logger                 *zap.Logger
+	Tracer                 trace.Tracer
 }
 
 // NewSpanReader returns a new SpanReader with a metrics.
@@ -145,7 +146,7 @@ func NewSpanReader(p SpanReaderParams) *SpanReader {
 	return &SpanReader{
 		client:                  p.Client,
 		maxSpanAge:              maxSpanAge,
-		serviceOperationStorage: NewServiceOperationStorage(p.Client, p.Logger, 0), // the decorator takes care of metrics
+		serviceOperationStorage: NewServiceOperationStorage(p.Client, p.Logger, 0, p.UseIndexSuffixTemplate), // the decorator takes care of metrics
 		spanIndexPrefix:         p.IndexPrefix.Apply(spanIndexBaseName),
 		serviceIndexPrefix:      p.IndexPrefix.Apply(serviceIndexBaseName),
 		spanIndex:               p.SpanIndex,
@@ -153,7 +154,7 @@ func NewSpanReader(p SpanReaderParams) *SpanReader {
 		timeRangeIndices: getLoggingTimeRangeIndexFn(
 			p.Logger,
 			addRemoteReadClusters(
-				getTimeRangeIndexFn(p.UseReadWriteAliases, readAliasSuffix),
+				getTimeRangeIndexFn(p.UseReadWriteAliases, p.UseIndexSuffixTemplate, readAliasSuffix),
 				p.RemoteReadClusters,
 			),
 		),
@@ -181,10 +182,15 @@ func getLoggingTimeRangeIndexFn(logger *zap.Logger, fn timeRangeIndexFn) timeRan
 	}
 }
 
-func getTimeRangeIndexFn(useReadWriteAliases bool, readAlias string) timeRangeIndexFn {
+func getTimeRangeIndexFn(useReadWriteAliases, useIndexSuffixTemplate bool, readAlias string) timeRangeIndexFn {
 	if useReadWriteAliases {
 		return func(indexPrefix, _ /* indexDateLayout */ string, _ /* startTime */ time.Time, _ /* endTime */ time.Time, _ /* reduceDuration */ time.Duration) []string {
 			return []string{indexPrefix + readAlias}
+		}
+	}
+	if useIndexSuffixTemplate {
+		return func(indexPrefix, _ /* indexDateLayout */ string, _ /* startTime */ time.Time, _ /* endTime */ time.Time, _ /* reduceDuration */ time.Duration) []string {
+			return []string{indexPrefix + "*"}
 		}
 	}
 	return timeRangeIndices

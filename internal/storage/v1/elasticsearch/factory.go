@@ -114,10 +114,16 @@ func (f *FactoryBase) GetSpanReaderParams() esSpanStore.SpanReaderParams {
 		ServiceIndex:        f.config.Indices.Services,
 		TagDotReplacement:   f.config.Tags.DotReplacement,
 		UseReadWriteAliases: f.config.UseReadWriteAliases,
-		ReadAliasSuffix:     f.config.ReadAliasSuffix,
-		RemoteReadClusters:  f.config.RemoteReadClusters,
-		Logger:              f.logger,
-		Tracer:              f.tracer.Tracer("esSpanStore.SpanReader"),
+		UseIndexSuffixTemplate: func() bool {
+			if f.config.Indices.IndexSuffixTemplate != "" {
+				return true
+			}
+			return false
+		}(),
+		ReadAliasSuffix:    f.config.ReadAliasSuffix,
+		RemoteReadClusters: f.config.RemoteReadClusters,
+		Logger:             f.logger,
+		Tracer:             f.tracer.Tracer("esSpanStore.SpanReader"),
 	}
 }
 
@@ -126,6 +132,7 @@ func (f *FactoryBase) GetSpanWriterParams() esSpanStore.SpanWriterParams {
 	return esSpanStore.SpanWriterParams{
 		Client:              f.getClient,
 		IndexPrefix:         f.config.Indices.IndexPrefix,
+		IndexSuffixTemplate: f.config.Indices.IndexSuffixTemplate,
 		SpanIndex:           f.config.Indices.Spans,
 		ServiceIndex:        f.config.Indices.Services,
 		AllTagsAsFields:     f.config.Tags.AllAsFields,

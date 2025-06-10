@@ -34,7 +34,8 @@ import (
 )
 
 const (
-	IndexPrefixSeparator = "-"
+	IndexPrefixSeparator     = "-"
+	versionConflictErrorType = "version_conflict_engine_exception"
 )
 
 // IndexOptions describes the index format and rollover frequency
@@ -62,11 +63,12 @@ type IndexOptions struct {
 type Indices struct {
 	// IndexPrefix is an optional prefix to prepend to Jaeger indices.
 	// For example, setting this field to "production" creates "production-jaeger-*".
-	IndexPrefix  IndexPrefix  `mapstructure:"index_prefix"`
-	Spans        IndexOptions `mapstructure:"spans"`
-	Services     IndexOptions `mapstructure:"services"`
-	Dependencies IndexOptions `mapstructure:"dependencies"`
-	Sampling     IndexOptions `mapstructure:"sampling"`
+	IndexPrefix         IndexPrefix  `mapstructure:"index_prefix"`
+	IndexSuffixTemplate string       `mapstructure:"index_suffix_template"`
+	Spans               IndexOptions `mapstructure:"spans"`
+	Services            IndexOptions `mapstructure:"services"`
+	Dependencies        IndexOptions `mapstructure:"dependencies"`
+	Sampling            IndexOptions `mapstructure:"sampling"`
 }
 
 type bulkCallback struct {
@@ -304,6 +306,16 @@ func (bcb *bulkCallback) invoke(id int64, requests []elastic.BulkableRequest, re
 		for _, it := range response.Items {
 			for key, val := range it {
 				if val.Error != nil {
+					// Ignore version_conflict_engine_exception errors:
+					// These occur when attempting to create a document with an existing ID in an Elasticsearch DataStream.
+					// DataStreams are built on a Write-Once-Read-Many (WORM) model, which means each document ID can only be written once.
+					// This kind of error happens specifically when writing to DataStream indices (those starting with ".ds") and trying to insert a duplicate document by ID.
+					//
+					// In this case, Jaeger may send duplicate service data (e.g., heartbeats or metadata refreshes), which is normal behavior.
+					// Therefore, version conflicts caused by such idempotent writes can be safely ignored.
+					if strings.HasPrefix(val.Error.Index, ".ds") && key == "create" && val.Error.Type == versionConflictErrorType {
+						continue
+					}
 					bcb.logger.Error("Elasticsearch part of bulk request failed",
 						zap.String("map-key", key), zap.Reflect("response", val))
 				}
@@ -630,6 +642,18 @@ func (c *Configuration) Validate() error {
 	}
 	if c.CreateIndexTemplates && c.UseILM {
 		return errors.New("when UseILM is set true, CreateIndexTemplates must be set to false and index templates must be created by init process of es-rollover app")
+	}
+	if c.UseReadWriteAliases && c.Indices.IndexSuffixTemplate != "" {
+		return errors.New("UseReadWriteAliases must not be used with IndexSuffixTemplate as they are mutually exclusive strategies for index naming")
+	}
+	if c.Indices.IndexSuffixTemplate != "" {
+		c.Indices.IndexSuffixTemplate = strings.TrimSpace(c.Indices.IndexSuffixTemplate)
+		// make sure not use data layout
+		if c.Indices.Spans.DateLayout != "" || c.Indices.Services.DateLayout != "" {
+			return errors.New("cannot set DateLayout when IndexSuffixTemplate is enabled. " +
+				"Please rely on Elasticsearch data stream auto-managed index templates. " +
+				"Manually specifying date layouts is not allowed in this mode")
+		}
 	}
 	return nil
 }
