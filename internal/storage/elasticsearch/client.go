@@ -50,6 +50,7 @@ type TemplateCreateService interface {
 type IndexService interface {
 	Index(index string) IndexService
 	Type(typ string) IndexService
+	OpType(opTyp string) IndexService
 	Id(id string) IndexService
 	BodyJson(body any) IndexService
 	Add()

@@ -36,3 +36,34 @@ func (t *TraceWriter) WriteTraces(_ context.Context, td ptrace.Traces) error {
 func (t *TraceWriter) Close() error {
 	return t.spanWriter.Close()
 }
+
+type TraceDynamicIndexWriter struct {
+	spanWriter          spanstore.CoreSpanWriter
+	indexSuffixTemplate string
+	dynamicKeys         []string
+}
+
+func NewTraceDynamicIndexWriter(p spanstore.SpanWriterParams) *TraceDynamicIndexWriter {
+	return &TraceDynamicIndexWriter{
+		spanWriter:          spanstore.NewSpanWriter(p),
+		indexSuffixTemplate: p.IndexSuffixTemplate,
+		dynamicKeys:         parseDynamicKeys(p.IndexSuffixTemplate),
+	}
+}
+
+// WriteTraces convert the traces to ES Span model and write into the database
+func (t *TraceDynamicIndexWriter) WriteTraces(_ context.Context, td ptrace.Traces) error {
+	dbSpans := ToDBModel(td)
+	for i := 0; i < len(dbSpans); i++ {
+		span := &dbSpans[i]
+		t.spanWriter.WriteSpanWithDynamicSuffix(
+			model.EpochMicrosecondsAsTime(span.StartTime),
+			span,
+			buildIndexSuffix(span, t.dynamicKeys, t.indexSuffixTemplate))
+	}
+	return nil
+}
+
+func (t *TraceDynamicIndexWriter) Close() error {
+	return t.spanWriter.Close()
+}

@@ -141,6 +141,7 @@ func spanToDbSpan(span ptrace.Span, libraryTags pcommon.InstrumentationScope, pr
 		Logs:            spanEventsToDbSpanLogs(span.Events()),
 		Process:         process,
 		Flags:           span.Flags(),
+		Timestamp:       startTime,
 	}
 }
 

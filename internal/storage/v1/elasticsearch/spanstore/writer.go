@@ -38,12 +38,14 @@ type SpanWriter struct {
 	allTagsAsFields   bool
 	tagDotReplacement string
 	tagKeysAsFields   map[string]bool
+	UseDataStream     bool
 }
 
 // CoreSpanWriter is a DB-Level abstraction which directly deals with database level operations
 type CoreSpanWriter interface {
 	// WriteSpan writes a span and its corresponding service:operation in ElasticSearch
 	WriteSpan(spanStartTime time.Time, span *dbmodel.Span)
+	WriteSpanWithDynamicSuffix(spanStartTime time.Time, span *dbmodel.Span, dynamicIndexSuffix string)
 	// Close closes CoreSpanWriter
 	Close() error
 }
@@ -56,6 +58,7 @@ type SpanWriterParams struct {
 	SpanIndex           cfg.IndexOptions
 	ServiceIndex        cfg.IndexOptions
 	IndexPrefix         cfg.IndexPrefix
+	IndexSuffixTemplate string
 	AllTagsAsFields     bool
 	TagKeysAsFields     []string
 	TagDotReplacement   string
@@ -85,7 +88,7 @@ func NewSpanWriter(p SpanWriterParams) *SpanWriter {
 		tags[k] = true
 	}
 
-	serviceOperationStorage := NewServiceOperationStorage(p.Client, p.Logger, serviceCacheTTL)
+	serviceOperationStorage := NewServiceOperationStorage(p.Client, p.Logger, serviceCacheTTL, p.IndexSuffixTemplate != "")
 	return &SpanWriter{
 		client:            p.Client,
 		logger:            p.Logger,
@@ -95,22 +98,23 @@ func NewSpanWriter(p SpanWriterParams) *SpanWriter {
 		tagKeysAsFields:   tags,
 		allTagsAsFields:   p.AllTagsAsFields,
 		tagDotReplacement: p.TagDotReplacement,
+		UseDataStream:     p.IndexSuffixTemplate != "",
 	}
 }
 
 // spanAndServiceIndexFn returns names of span and service indices
-type spanAndServiceIndexFn func(spanTime time.Time) (string, string)
+type spanAndServiceIndexFn func(spanTime time.Time, dynamicIndexSuffix string) (string, string)
 
 func getSpanAndServiceIndexFn(p SpanWriterParams, writeAlias string) spanAndServiceIndexFn {
 	spanIndexPrefix := p.IndexPrefix.Apply(spanIndexBaseName)
 	serviceIndexPrefix := p.IndexPrefix.Apply(serviceIndexBaseName)
 	if p.UseReadWriteAliases {
-		return func(_ time.Time) (string, string) {
+		return func(_ time.Time, _ string) (string, string) {
 			return spanIndexPrefix + writeAlias, serviceIndexPrefix + writeAlias
 		}
 	}
-	return func(date time.Time) (string, string) {
-		return indexWithDate(spanIndexPrefix, p.SpanIndex.DateLayout, date), indexWithDate(serviceIndexPrefix, p.ServiceIndex.DateLayout, date)
+	return func(date time.Time, dynamicIndexSuffix string) (string, string) {
+		return indexWithDate(spanIndexPrefix+dynamicIndexSuffix, p.SpanIndex.DateLayout, date), indexWithDate(serviceIndexPrefix+dynamicIndexSuffix, p.ServiceIndex.DateLayout, date)
 	}
 }
 
@@ -118,7 +122,18 @@ func getSpanAndServiceIndexFn(p SpanWriterParams, writeAlias string) spanAndServ
 func (s *SpanWriter) WriteSpan(spanStartTime time.Time, span *dbmodel.Span) {
 	s.writerMetrics.Attempts.Inc(1)
 	s.convertNestedTagsToFieldTags(span)
-	spanIndexName, serviceIndexName := s.spanServiceIndex(spanStartTime)
+	spanIndexName, serviceIndexName := s.spanServiceIndex(spanStartTime, "")
+	if serviceIndexName != "" {
+		s.writeService(serviceIndexName, span)
+	}
+	s.writeSpan(spanIndexName, span)
+	s.logger.Debug("Wrote span to ES index", zap.String("index", spanIndexName))
+}
+
+func (s *SpanWriter) WriteSpanWithDynamicSuffix(spanStartTime time.Time, span *dbmodel.Span, dynamicIndexSuffix string) {
+	s.writerMetrics.Attempts.Inc(1)
+	s.convertNestedTagsToFieldTags(span)
+	spanIndexName, serviceIndexName := s.spanServiceIndex(spanStartTime, dynamicIndexSuffix)
 	if serviceIndexName != "" {
 		s.writeService(serviceIndexName, span)
 	}
@@ -153,7 +168,11 @@ func (s *SpanWriter) writeService(indexName string, jsonSpan *dbmodel.Span) {
 }
 
 func (s *SpanWriter) writeSpan(indexName string, jsonSpan *dbmodel.Span) {
-	s.client().Index().Index(indexName).Type(spanType).BodyJson(&jsonSpan).Add()
+	opType := "index"
+	if s.UseDataStream {
+		opType = "create"
+	}
+	s.client().Index().Index(indexName).Type(spanType).OpType(opType).BodyJson(&jsonSpan).Add()
 }
 
 func (s *SpanWriter) splitElevatedTags(keyValues []dbmodel.KeyValue) ([]dbmodel.KeyValue, map[string]any) {
