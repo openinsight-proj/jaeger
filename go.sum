@@ -570,6 +570,8 @@ github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil v0.126.0
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil v0.126.0/go.mod h1:j54xa94UWeLUNV1PXLm8QAlXCOqw6T8LOACb/qtZcug=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/resourcetotelemetry v0.126.0 h1:MFOeZF7iVB4k42QUTkjX2yygnIVWj1PI7u4xb2drMnU=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/resourcetotelemetry v0.126.0/go.mod h1:MKhyEaxHNAvk/+fbXRpVkOAFnFCLnC0YwkXYNjweLf8=
+github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling v0.126.0 h1:qvjkP4BHOUgbefGD3qIkUZF8N3TsBe5Er8vBimO0QYs=
+github.com/open-telemetry/opentelemetry-collector-contrib/pkg/sampling v0.126.0/go.mod h1:hl8SlbGPMPew9PxBIP9EHcM6ImJ7pKnLQ0yaHoorB4c=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status v0.126.0 h1:12JIbHuiEUNyG+bNvxJCWDI2zB4CU7a/h8BaMi2Qfac=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status v0.126.0/go.mod h1:onRHLUhteIvInOiwyEStOw4Lq9++zvKYZKhlr3eaGWg=
 github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/azure v0.126.0 h1:r2UIeV95M9AgQWlKmXoamdI4kTONOQC5iMazfx3+M4E=
@@ -590,6 +592,8 @@ github.com/open-telemetry/opentelemetry-collector-contrib/processor/deltatocumul
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/deltatocumulativeprocessor v0.116.0/go.mod h1:f0GdYWGxUunyRZ088gHnoX78pc/gZc3dQlRtidiGXzg=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.126.0 h1:+7OFOEhSExnzgQv0idSSq/gCCm3RZ7H2ky/bAtrrrFM=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.126.0/go.mod h1:1hCzWgLQTZnv62vRwea/ayxnGB87YwiDEebTWW5rtec=
+github.com/open-telemetry/opentelemetry-collector-contrib/processor/probabilisticsamplerprocessor v0.126.0 h1:xkR51jOAOZy5Ess55jFYv8iFrychiEqWnYnpocUpGdQ=
+github.com/open-telemetry/opentelemetry-collector-contrib/processor/probabilisticsamplerprocessor v0.126.0/go.mod h1:7nnt7xbbSLiaO6lfGal26JVuGVy7DweJqzvBZmmHgqY=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.126.0 h1:LynG0LtPN6E9Ml+1liyLM3wALlmVrs//MVkR2lnPkbw=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor v0.126.0/go.mod h1:I+g9XpxxxfmZJJceuJjvR9OsO9SqTNo80Nni/TYEaFQ=
 github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.126.0 h1:Kts9jOeD2KC5kUUjwLQJmh3K8oknCjJjBBRL4Xue7I0=
