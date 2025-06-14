@@ -31,7 +31,7 @@ tags() {
 
 ## If we are on a release tag, let's extract the version number.
 ## The other possible values are 'main' or another branch name.
-if [[ $BRANCH =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+if [[ $BRANCH =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ || "$ALLOW_PUSH_IMAGE" == "true" ]]; then
     MAJOR_MINOR_PATCH=${BRANCH#v}
     tags "${BASE_BUILD_IMAGE}:${MAJOR_MINOR_PATCH}-${GITHUB_SHA}"
     tags "${BASE_BUILD_IMAGE}:latest"

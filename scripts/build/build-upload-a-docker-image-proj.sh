@@ -100,7 +100,7 @@ else
     echo "::endgroup::"
 
     # Only push multi-arch images to ghcr.io for main branch or for release tags vM.N.P{-rcX}
-    if [[ "$BRANCH" == "insight-main" || $BRANCH =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+    if [[ "$BRANCH" == "insight-main" || $BRANCH =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ || "$ALLOW_PUSH_IMAGE" == "true" ]]; then
 	    echo "will build docker images and upload to ghcr.io, BRANCH=$BRANCH"
 	    PUSHTAG="type=image,push=true"
 	    upload_comment=" and uploading"
