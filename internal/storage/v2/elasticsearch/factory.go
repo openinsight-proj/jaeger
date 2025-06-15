@@ -46,7 +46,11 @@ func (f *Factory) CreateTraceReader() (tracestore.Reader, error) {
 
 func (f *Factory) CreateTraceWriter() (tracestore.Writer, error) {
 	params := f.coreFactory.GetSpanWriterParams()
-	wr := v2tracestore.NewTraceWriter(params)
+	var wr tracestore.Writer
+	wr = v2tracestore.NewTraceWriter(params)
+	if params.IndexSuffixTemplate != "" {
+		wr = v2tracestore.NewTraceDynamicIndexWriter(params)
+	}
 	return wr, nil
 }
 

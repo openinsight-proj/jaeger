@@ -60,6 +60,9 @@ type Span struct {
 	Tag     map[string]any `json:"tag,omitempty"`
 	Logs    []Log          `json:"logs"`
 	Process Process        `json:"process,omitempty"`
+
+	// data stream index require @timestamp field
+	Timestamp time.Time `json:"@timestamp"`
 }
 
 // Reference is a reference from one span to another
@@ -94,6 +97,9 @@ type KeyValue struct {
 type Service struct {
 	ServiceName   string `json:"serviceName"`
 	OperationName string `json:"operationName"`
+
+	// data stream index require @timestamp field
+	Timestamp time.Time `json:"@timestamp"`
 }
 
 // Operation is the struct for span operation properties.
