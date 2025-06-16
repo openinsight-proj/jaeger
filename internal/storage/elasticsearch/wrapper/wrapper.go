@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	esV8 "github.com/elastic/go-elasticsearch/v9"
 	esV8api "github.com/elastic/go-elasticsearch/v9/esapi"
-	"github.com/olivere/elastic"
-
 	es "github.com/jaegertracing/jaeger/internal/storage/elasticsearch"
+	"github.com/olivere/elastic"
 )
 
 // This file avoids lint because the Id and Json are required to be capitalized, but must match an outside library.
@@ -25,6 +25,11 @@ type ClientWrapper struct {
 	bulkService *elastic.BulkProcessor
 	esVersion   uint
 	clientV8    *esV8.Client
+
+	useIndexSuffixTemplate  bool
+	newBulkProcessor        func() (*elastic.BulkProcessor, error)
+	dynamicSpanIndexService map[string]*elastic.BulkProcessor
+	mute                    sync.Mutex
 }
 
 // GetVersion returns the ElasticSearch Version
@@ -33,12 +38,15 @@ func (c ClientWrapper) GetVersion() uint {
 }
 
 // WrapESClient creates a ESClient out of *elastic.Client.
-func WrapESClient(client *elastic.Client, s *elastic.BulkProcessor, esVersion uint, clientV8 *esV8.Client) ClientWrapper {
+func WrapESClient(client *elastic.Client, s *elastic.BulkProcessor, esVersion uint, clientV8 *esV8.Client, useIndexSuffixTemplate bool, newBulkProcessor func() (*elastic.BulkProcessor, error)) ClientWrapper {
 	return ClientWrapper{
-		client:      client,
-		bulkService: s,
-		esVersion:   esVersion,
-		clientV8:    clientV8,
+		client:                  client,
+		bulkService:             s,
+		esVersion:               esVersion,
+		clientV8:                clientV8,
+		useIndexSuffixTemplate:  useIndexSuffixTemplate,
+		newBulkProcessor:        newBulkProcessor,
+		dynamicSpanIndexService: map[string]*elastic.BulkProcessor{},
 	}
 }
 
@@ -72,6 +80,29 @@ func (c ClientWrapper) CreateTemplate(ttype string) es.TemplateCreateService {
 func (c ClientWrapper) Index() es.IndexService {
 	r := elastic.NewBulkIndexRequest()
 	return WrapESIndexService(r, c.bulkService, c.esVersion)
+}
+
+func (c ClientWrapper) DynamicIndex(index string) es.IndexService {
+	bulkService := c.bulkService
+	r := elastic.NewBulkIndexRequest()
+	if c.useIndexSuffixTemplate {
+		c.mute.Lock()
+		defer c.mute.Unlock()
+
+		bulkService, ok := c.dynamicSpanIndexService[index]
+		if !ok {
+			bp, _ := c.newBulkProcessor()
+			if bp == nil {
+				//TODO log to fail create BulkProcessor
+				// and fallback to default bulkService
+				return WrapESIndexService(r, c.bulkService, c.esVersion)
+			}
+			c.dynamicSpanIndexService[index] = bp
+			bulkService = bp
+		}
+		return WrapESIndexService(r, bulkService, c.esVersion)
+	}
+	return WrapESIndexService(r, bulkService, c.esVersion)
 }
 
 // Search calls this function to internal client.

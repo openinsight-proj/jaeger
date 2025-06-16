@@ -172,7 +172,7 @@ func (s *SpanWriter) writeSpan(indexName string, jsonSpan *dbmodel.Span) {
 	if s.UseDataStream {
 		opType = "create"
 	}
-	s.client().Index().Index(indexName).Type(spanType).OpType(opType).BodyJson(&jsonSpan).Add()
+	s.client().DynamicIndex(indexName).Index(indexName).Type(spanType).OpType(opType).BodyJson(&jsonSpan).Add()
 }
 
 func (s *SpanWriter) splitElevatedTags(keyValues []dbmodel.KeyValue) ([]dbmodel.KeyValue, map[string]any) {

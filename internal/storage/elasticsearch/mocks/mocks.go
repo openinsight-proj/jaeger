@@ -247,6 +247,59 @@ func (_c *Client_DeleteIndex_Call) RunAndReturn(run func(index string) elasticse
 	return _c
 }
 
+// DynamicIndex provides a mock function for the type Client
+func (_mock *Client) DynamicIndex(index string) elasticsearch.IndexService {
+	ret := _mock.Called(index)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DynamicIndex")
+	}
+
+	var r0 elasticsearch.IndexService
+	if returnFunc, ok := ret.Get(0).(func(string) elasticsearch.IndexService); ok {
+		r0 = returnFunc(index)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(elasticsearch.IndexService)
+		}
+	}
+	return r0
+}
+
+// Client_DynamicIndex_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DynamicIndex'
+type Client_DynamicIndex_Call struct {
+	*mock.Call
+}
+
+// DynamicIndex is a helper method to define mock.On call
+//   - index string
+func (_e *Client_Expecter) DynamicIndex(index interface{}) *Client_DynamicIndex_Call {
+	return &Client_DynamicIndex_Call{Call: _e.mock.On("DynamicIndex", index)}
+}
+
+func (_c *Client_DynamicIndex_Call) Run(run func(index string)) *Client_DynamicIndex_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *Client_DynamicIndex_Call) Return(indexService elasticsearch.IndexService) *Client_DynamicIndex_Call {
+	_c.Call.Return(indexService)
+	return _c
+}
+
+func (_c *Client_DynamicIndex_Call) RunAndReturn(run func(index string) elasticsearch.IndexService) *Client_DynamicIndex_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetVersion provides a mock function for the type Client
 func (_mock *Client) GetVersion() uint {
 	ret := _mock.Called()

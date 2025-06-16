@@ -242,16 +242,24 @@ func NewClient(c *Configuration, logger *zap.Logger, metricsFactory metrics.Fact
 		logger: logger,
 	}
 
-	bulkProc, err := rawClient.BulkProcessor().
-		Before(func(id int64, _ /* requests */ []elastic.BulkableRequest) {
-			bcb.startTimes.Store(id, time.Now())
-		}).
-		After(bcb.invoke).
-		BulkSize(c.BulkProcessing.MaxBytes).
-		Workers(c.BulkProcessing.Workers).
-		BulkActions(c.BulkProcessing.MaxActions).
-		FlushInterval(c.BulkProcessing.FlushInterval).
-		Do(context.Background())
+	newBulkProcessor := func() (*elastic.BulkProcessor, error) {
+		bulkProc, err := rawClient.BulkProcessor().
+			Before(func(id int64, _ /* requests */ []elastic.BulkableRequest) {
+				bcb.startTimes.Store(id, time.Now())
+			}).
+			After(bcb.invoke).
+			BulkSize(c.BulkProcessing.MaxBytes).
+			Workers(c.BulkProcessing.Workers).
+			BulkActions(c.BulkProcessing.MaxActions).
+			FlushInterval(c.BulkProcessing.FlushInterval).
+			Do(context.Background())
+		if err != nil {
+			return nil, err
+		}
+
+		return bulkProc, nil
+	}
+	bulkProc, err := newBulkProcessor()
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +298,7 @@ func NewClient(c *Configuration, logger *zap.Logger, metricsFactory metrics.Fact
 		}
 	}
 
-	return eswrapper.WrapESClient(rawClient, bulkProc, c.Version, rawClientV8), nil
+	return eswrapper.WrapESClient(rawClient, bulkProc, c.Version, rawClientV8, c.Indices.IndexSuffixTemplate != "", newBulkProcessor), nil
 }
 
 func (bcb *bulkCallback) invoke(id int64, requests []elastic.BulkableRequest, response *elastic.BulkResponse, err error) {
