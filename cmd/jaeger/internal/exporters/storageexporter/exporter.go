@@ -55,5 +55,5 @@ func (exp *storageExporter) pushTraces(ctx context.Context, td ptrace.Traces) er
 	newTraces := ptrace.NewTraces()
 	td.CopyTo(newTraces)
 
-	return exp.traceWriter.WriteTraces(ctx, exp.sanitizer(td))
+	return exp.traceWriter.WriteTraces(ctx, exp.sanitizer(newTraces))
 }
