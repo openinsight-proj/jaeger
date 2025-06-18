@@ -17,6 +17,7 @@ type Client interface {
 	CreateIndex(index string) IndicesCreateService
 	CreateTemplate(id string) TemplateCreateService
 	Index() IndexService
+	DynamicIndex(index string) IndexService
 	Search(indices ...string) SearchService
 	MultiSearch() MultiSearchService
 	DeleteIndex(index string) IndicesDeleteService
@@ -50,6 +51,7 @@ type TemplateCreateService interface {
 type IndexService interface {
 	Index(index string) IndexService
 	Type(typ string) IndexService
+	OpType(opTyp string) IndexService
 	Id(id string) IndexService
 	BodyJson(body any) IndexService
 	Add()

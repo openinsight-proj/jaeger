@@ -493,3 +493,55 @@ func (_c *CoreSpanWriter_WriteSpan_Call) RunAndReturn(run func(spanStartTime tim
 	_c.Run(run)
 	return _c
 }
+
+// WriteSpanWithDynamicSuffix provides a mock function for the type CoreSpanWriter
+func (_mock *CoreSpanWriter) WriteSpanWithDynamicSuffix(spanStartTime time.Time, span *dbmodel.Span, dynamicIndexSuffix string) {
+	_mock.Called(spanStartTime, span, dynamicIndexSuffix)
+	return
+}
+
+// CoreSpanWriter_WriteSpanWithDynamicSuffix_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WriteSpanWithDynamicSuffix'
+type CoreSpanWriter_WriteSpanWithDynamicSuffix_Call struct {
+	*mock.Call
+}
+
+// WriteSpanWithDynamicSuffix is a helper method to define mock.On call
+//   - spanStartTime time.Time
+//   - span *dbmodel.Span
+//   - dynamicIndexSuffix string
+func (_e *CoreSpanWriter_Expecter) WriteSpanWithDynamicSuffix(spanStartTime interface{}, span interface{}, dynamicIndexSuffix interface{}) *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call {
+	return &CoreSpanWriter_WriteSpanWithDynamicSuffix_Call{Call: _e.mock.On("WriteSpanWithDynamicSuffix", spanStartTime, span, dynamicIndexSuffix)}
+}
+
+func (_c *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call) Run(run func(spanStartTime time.Time, span *dbmodel.Span, dynamicIndexSuffix string)) *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 time.Time
+		if args[0] != nil {
+			arg0 = args[0].(time.Time)
+		}
+		var arg1 *dbmodel.Span
+		if args[1] != nil {
+			arg1 = args[1].(*dbmodel.Span)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call) Return() *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call) RunAndReturn(run func(spanStartTime time.Time, span *dbmodel.Span, dynamicIndexSuffix string)) *CoreSpanWriter_WriteSpanWithDynamicSuffix_Call {
+	_c.Run(run)
+	return _c
+}
