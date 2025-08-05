@@ -15,7 +15,7 @@ set -u
 
 BASE_BUILD_IMAGE=${1:?'expecting Docker image name as argument, such as jaegertracing/jaeger'}
 BRANCH=${BRANCH:?'expecting BRANCH env var'}
-GITHUB_SHA=${GITHUB_SHA:-$(git rev-parse HEAD)}
+GITHUB_SHA=${GITHUB_SHA:-$(git rev-parse --short HEAD)}
 
 # accumulate output in this variable
 IMAGE_TAGS=""
@@ -33,15 +33,12 @@ tags() {
 ## The other possible values are 'main' or another branch name.
 if [[ $BRANCH =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ || "$ALLOW_PUSH_IMAGE" == "true" ]]; then
     MAJOR_MINOR_PATCH=${BRANCH#v}
-    tags "${BASE_BUILD_IMAGE}:${MAJOR_MINOR_PATCH}-${GITHUB_SHA}"
-    tags "${BASE_BUILD_IMAGE}:latest"
+    tags "${BASE_BUILD_IMAGE}:jaeger-${MAJOR_MINOR_PATCH}-${GITHUB_SHA}"
+    tags "${BASE_BUILD_IMAGE}:jaeger-latest"
 elif [[ $BRANCH != "main" ]]; then
     # not on release tag nor on main - no tags are needed since we won't publish
     echo ""
     exit
 fi
-
-tags "${BASE_BUILD_IMAGE}-snapshot:${GITHUB_SHA}"
-tags "${BASE_BUILD_IMAGE}-snapshot:latest"
 
 echo "${IMAGE_TAGS}"

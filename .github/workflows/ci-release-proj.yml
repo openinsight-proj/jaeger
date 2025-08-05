@@ -104,5 +104,5 @@ jobs:
         echo "Build v2 image on: $(git rev-parse --short HEAD)"
         BRANCH=${{ env.BRANCH }} \
         bash scripts/build/build-all-in-one-image-proj.sh \
-          -p ${{ steps.params.outputs.platforms }} \
+          -D -p ${{ steps.params.outputs.platforms }} \
           v2

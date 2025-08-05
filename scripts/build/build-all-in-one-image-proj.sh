@@ -22,7 +22,7 @@ FLAGS=()
 
 # this script doesn't use BRANCH and GITHUB_SHA itself, but its dependency scripts do.
 export BRANCH=${BRANCH?'env var is required'}
-export GITHUB_SHA=${GITHUB_SHA:-$(git rev-parse HEAD)}
+export GITHUB_SHA=$(git rev-parse --short HEAD)
 
 while getopts "Dhlop:" opt; do
 	case "${opt}" in
@@ -125,17 +125,17 @@ make "$baseimg_target" LINUX_PLATFORMS="$platforms"
 #run_integration_test "localhost:5000/$repo"
 
 # build all-in-one image and upload to dockerhub/quay.io
-bash scripts/build/build-upload-a-docker-image-proj.sh "${FLAGS[@]}" -b -c "${BINARY}" -d "cmd/${BINARY}" -p "${platforms}" -t release
+bash scripts/build/build-upload-a-docker-image-proj.sh "${FLAGS[@]}" -b -c "opentelemetry-collector-contrib" -d "cmd/${BINARY}" -p "${platforms}" -t release
 
 # build debug image if requested
-if [[ "${add_debugger}" == "Y" ]]; then
-  make "build-${BINARY}" GOOS=linux GOARCH="$GOARCH" DEBUG_BINARY=1
-  repo="${repo}-debug"
+#if [[ "${add_debugger}" == "Y" ]]; then
+#  make "build-${BINARY}" GOOS=linux GOARCH="$GOARCH" DEBUG_BINARY=1
+#  repo="${repo}-debug"
 
   # build locally for integration test (the -l switch)
 #  bash scripts/build/build-upload-a-docker-image-proj.sh -l -b -c "${BINARY}-debug" -d "cmd/${BINARY}" -t debug
 #  run_integration_test "localhost:5000/$repo"
 
   # build & upload official image
-  bash scripts/build/build-upload-a-docker-image-proj.sh "${FLAGS[@]}" -b -c "${BINARY}-debug" -d "cmd/${BINARY}" -t debug
-fi
+#  bash scripts/build/build-upload-a-docker-image-proj.sh "${FLAGS[@]}" -b -c "opentelemetry-collector-contrib-debug" -d "cmd/${BINARY}" -t debug
+#fi
