@@ -100,6 +100,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		jaegerreceiver.NewFactory(),
 		kafkareceiver.NewFactory(),
 		zipkinreceiver.NewFactory(),
+
+		// openinsight-proj
 		skywalkingreceiver.NewFactory(),
 		fluentforwardreceiver.NewFactory(),
 	)
@@ -118,6 +120,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		kafkaexporter.NewFactory(),
 		prometheusexporter.NewFactory(),
 		// elasticsearch.NewFactory(),
+
+		// openinsight-proj
 		loadbalancingexporter.NewFactory(),
 		prometheusremotewriteexporter.NewFactory(),
 		sumologicexporter.NewFactory(),
@@ -135,6 +139,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		filterprocessor.NewFactory(),
 		// add-ons
 		adaptivesampling.NewFactory(),
+
+		// openinsight-proj
 		transformprocessor.NewFactory(),
 		probabilisticsamplerprocessor.NewFactory(),
 	)
@@ -147,6 +153,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		forwardconnector.NewFactory(),
 		// add-ons
 		spanmetricsconnector.NewFactory(),
+
+		// openinsight-proj
 		servicegraphconnector.NewFactory(),
 	)
 	if err != nil {
