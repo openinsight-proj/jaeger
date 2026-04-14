@@ -4,9 +4,10 @@
 package elasticsearch
 
 import (
+	"cmp"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/gogo/protobuf/types"
@@ -126,11 +127,11 @@ func getLabelKey(labels []*metrics.Label) string {
 	copy(labelsCopy, labels)
 
 	// Sort by Name first, then by Value
-	sort.Slice(labelsCopy, func(i, j int) bool {
-		if labelsCopy[i].Name == labelsCopy[j].Name {
-			return labelsCopy[i].Value < labelsCopy[j].Value
+	slices.SortFunc(labelsCopy, func(a, b *metrics.Label) int {
+		if a.Name == b.Name {
+			return cmp.Compare(a.Value, b.Value)
 		}
-		return labelsCopy[i].Name < labelsCopy[j].Name
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	keys := make([]string, len(labelsCopy))
@@ -239,10 +240,7 @@ func applySlidingWindow(mf *metrics.MetricFamily, lookback int, processor func(m
 		processedPoints := make([]*metrics.MetricPoint, 0, len(points))
 
 		for i, currentPoint := range points {
-			start := i - lookback + 1
-			if start < 0 {
-				start = 0
-			}
+			start := max(i-lookback+1, 0)
 			window := points[start : i+1]
 			resultValue := processor(metric, window)
 

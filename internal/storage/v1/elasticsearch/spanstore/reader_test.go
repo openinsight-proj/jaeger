@@ -165,6 +165,16 @@ func TestNewSpanReader(t *testing.T) {
 			},
 			maxSpanAge: time.Hour * 24 * 365 * 50,
 		},
+		{
+			name: "explicit read aliases with UseReadWriteAliases",
+			params: SpanReaderParams{
+				MaxSpanAge:          time.Hour * 72,
+				UseReadWriteAliases: true,
+				SpanReadAlias:       "production-traces-read",
+				ServiceReadAlias:    "production-services-read",
+			},
+			maxSpanAge: time.Hour * 24 * 365 * 50,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -243,6 +253,26 @@ func TestSpanReaderIndices(t *testing.T) {
 				SpanIndex: spanIndexOpts, ServiceIndex: serviceIndexOpts, IndexPrefix: "foo:", UseReadWriteAliases: true, ReadAliasSuffix: "archive",
 			},
 			indices: []string{"foo:" + config.IndexPrefixSeparator + spanIndexBaseName + "archive", "foo:" + config.IndexPrefixSeparator + serviceIndexBaseName + "archive"},
+		},
+		{
+			params: SpanReaderParams{
+				SpanIndex:        spanIndexOpts,
+				ServiceIndex:     serviceIndexOpts,
+				SpanReadAlias:    "custom-span-read-alias",
+				ServiceReadAlias: "custom-service-read-alias",
+			},
+			indices: []string{"custom-span-read-alias", "custom-service-read-alias"},
+		},
+		{
+			params: SpanReaderParams{
+				SpanIndex:           spanIndexOpts,
+				ServiceIndex:        serviceIndexOpts,
+				IndexPrefix:         "foo:",
+				UseReadWriteAliases: true,
+				SpanReadAlias:       "production-traces-read",
+				ServiceReadAlias:    "production-services-read",
+			},
+			indices: []string{"production-traces-read", "production-services-read"},
 		},
 		{
 			params: SpanReaderParams{
@@ -440,7 +470,7 @@ func TestSpanReader_SearchAfter(t *testing.T) {
 	withSpanReader(t, func(r *spanReaderTest) {
 		var hits []*elastic.SearchHit
 
-		for i := 0; i < 10000; i++ {
+		for range 10000 {
 			hit := &elastic.SearchHit{Source: exampleESSpan}
 			hits = append(hits, hit)
 		}
@@ -693,7 +723,7 @@ func returnSearchFunc(typ string, r *spanReaderTest) (any, error) {
 			dbmodel.OperationQueryParameters{ServiceName: "someService"},
 		)
 	case traceIDAggregation:
-		return r.reader.findTraceIDs(context.Background(), dbmodel.TraceQueryParameters{})
+		return r.reader.findTraceIDsFromQuery(context.Background(), dbmodel.TraceQueryParameters{})
 	default:
 		return nil, errors.New("Specify services, operations, traceIDs only")
 	}

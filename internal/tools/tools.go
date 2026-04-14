@@ -11,9 +11,13 @@ package tools
 // This ensures that all systems use the same version of tools in addition to regular dependencies.
 
 import (
+	_ "gotest.tools/gotestsum"
 	_ "mvdan.cc/gofumpt"
 
 	_ "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 	_ "github.com/josephspurrier/goversioninfo/cmd/goversioninfo"
+	_ "github.com/open-telemetry/opentelemetry-collector-contrib/cmd/schemagen"
 	_ "github.com/vektra/mockery/v3"
+	_ "github.com/wadey/gocovmerge"
+	_ "golang.org/x/vuln/cmd/govulncheck"
 )

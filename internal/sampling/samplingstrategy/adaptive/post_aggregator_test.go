@@ -65,11 +65,19 @@ func errTestStorage() error {
 	return errors.New("storage error")
 }
 
+// testProbabilityCalculator is a test implementation of ProbabilityCalculator
+// that calculates new probability by multiplying the old probability by the
+// ratio of target QPS to current QPS.
+type testProbabilityCalculator struct{}
+
+// Calculate implements the ProbabilityCalculator interface for testing.
+func (testProbabilityCalculator) Calculate(targetQPS, qps, oldProbability float64) float64 {
+	factor := targetQPS / qps
+	return oldProbability * factor
+}
+
 func testCalculator() calculationstrategy.ProbabilityCalculator {
-	return calculationstrategy.CalculateFunc(func(targetQPS, qps, oldProbability float64) float64 {
-		factor := targetQPS / qps
-		return oldProbability * factor
-	})
+	return testProbabilityCalculator{}
 }
 
 func TestAggregateThroughputInputsImmutability(t *testing.T) {
@@ -351,7 +359,7 @@ func TestRunCalculationLoop(t *testing.T) {
 	agg.Start()
 	defer agg.Close()
 
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		agg.(*aggregator).Lock()
 		probabilities := agg.(*aggregator).postAggregator.probabilities
 		agg.(*aggregator).Unlock()
@@ -391,7 +399,7 @@ func TestRunCalculationLoop_GetThroughputError(t *testing.T) {
 	agg, err := NewAggregator(cfg, logger, metrics.NullFactory, mockEP, mockStorage)
 	require.NoError(t, err)
 	agg.Start()
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		// match logs specific to getThroughputErrMsg. We expect to see more than 2, once during
 		// initialization and one or more times during the loop.
 		if match, _ := testutils.LogMatcher(2, getThroughputErrMsg, logBuffer.Lines()); match {
@@ -467,7 +475,7 @@ func TestUsingAdaptiveSampling(t *testing.T) {
 
 func TestPrependServiceCache(t *testing.T) {
 	p := &PostAggregator{}
-	for i := 0; i < serviceCacheSize*2; i++ {
+	for range serviceCacheSize * 2 {
 		p.prependServiceCache()
 	}
 	assert.Len(t, p.serviceCache, serviceCacheSize)
@@ -705,4 +713,21 @@ func TestCalculateProbabilitiesAndQPSMultiple(t *testing.T) {
 
 	p.probabilities = probabilities
 	p.qps = qps
+}
+
+func TestAddJitter(t *testing.T) {
+	// zero duration: must not panic and must return 0
+	assert.Equal(t, 0*time.Nanosecond, addJitter(0))
+
+	// 1ns duration: jitterAmount/2 == 0, must not panic and must return 1ns
+	assert.Equal(t, time.Nanosecond, addJitter(time.Nanosecond))
+
+	// normal durations: result must be in [jitterAmount/2, jitterAmount)
+	for _, d := range []time.Duration{2 * time.Millisecond, time.Second, 20 * time.Second, 60 * time.Second} {
+		for range 100 {
+			got := addJitter(d)
+			assert.GreaterOrEqual(t, got, d/2, "addJitter(%v) below lower bound", d)
+			assert.Less(t, got, d, "addJitter(%v) at or above upper bound", d)
+		}
+	}
 }

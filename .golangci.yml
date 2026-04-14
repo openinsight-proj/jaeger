@@ -1,6 +1,6 @@
 version: "2"
 run:
-  go: "1.24"
+  go: "1.26"
 linters:
   enable:
     - asciicheck
@@ -24,6 +24,7 @@ linters:
     - revive
     - staticcheck
     - testifylint
+    - unused
     - usestdlibvars
     - usetesting
   disable:
@@ -103,6 +104,9 @@ linters:
           arguments:
             - 80
           disabled: true
+        # this should be enabled after fixing or disabling in a few packages
+        - name: package-directory-mismatch
+          disabled: true
         # would be ok if we could exclude the test files, but otherwise too noisy
         - name: add-constant
           disabled: true
@@ -121,29 +125,17 @@ linters:
         # wtf: "you have exceeded the maximum number of public struct declarations"
         - name: max-public-structs
           disabled: true
-        # TBD - often triggered in tests
-        - name: unhandled-error
-          disabled: true
         # often looks like a red herring, needs investigation
         - name: flag-parameter
           disabled: true
         # looks like a good linter, needs cleanup
-        - name: confusing-naming
-          disabled: true
+        # - name: confusing-naming
+        #   disabled: true
         # too pendantic
         - name: function-length
           disabled: true
         # definitely a good one, needs cleanup first
         - name: argument-limit
-          disabled: true
-        # maybe enable, needs invesitgation of the impact
-        - name: import-alias-naming
-          disabled: true
-        # maybe enable, needs invesitgation of the impact
-        - name: get-return
-          disabled: true
-        # investigate, could be real bugs. But didn't recent Go version changed loop variables semantics?
-        - name: range-val-address
           disabled: true
         # this is idiocy, promotes less readable code. Don't enable.
         - name: var-declaration
@@ -156,6 +148,9 @@ linters:
           disabled: true
         # this rule conflicts with nolintlint which does insist on no-space in //nolint
         - name: comment-spacings
+          disabled: true
+        # existing packages conflict with stdlib names or use underscores; cannot rename
+        - name: package-naming
           disabled: true
     staticcheck:
       checks:
@@ -185,10 +180,13 @@ linters:
       - linters:
           - staticcheck
         path: internal/grpctest/
+      - linters:
+          - revive
+        text: "unhandled-error"
+        path: _test\.go
     paths:
       - .*.pb.go$
       - mocks
-      - thrift-0.9.2
       - .*-gen
 issues:
   max-issues-per-linter: 0
@@ -207,5 +205,4 @@ formatters:
     paths:
       - .*.pb.go$
       - mocks
-      - thrift-0.9.2
       - .*-gen

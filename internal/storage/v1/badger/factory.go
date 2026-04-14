@@ -7,14 +7,13 @@ import (
 	"context"
 	"errors"
 	"expvar"
-	"flag"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/internal/distributedlock"
@@ -24,9 +23,9 @@ import (
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/samplingstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore/spanstoremetrics"
-	depStore "github.com/jaegertracing/jaeger/internal/storage/v1/badger/dependencystore"
-	badgerSampling "github.com/jaegertracing/jaeger/internal/storage/v1/badger/samplingstore"
-	badgerStore "github.com/jaegertracing/jaeger/internal/storage/v1/badger/spanstore"
+	depstore "github.com/jaegertracing/jaeger/internal/storage/v1/badger/dependencystore"
+	badgersampling "github.com/jaegertracing/jaeger/internal/storage/v1/badger/samplingstore"
+	badgerstore "github.com/jaegertracing/jaeger/internal/storage/v1/badger/spanstore"
 )
 
 const (
@@ -37,23 +36,22 @@ const (
 )
 
 var ( // interface comformance checks
-	_ storage.Factory              = (*Factory)(nil)
 	_ io.Closer                    = (*Factory)(nil)
-	_ storage.Configurable         = (*Factory)(nil)
 	_ storage.Purger               = (*Factory)(nil)
 	_ storage.SamplingStoreFactory = (*Factory)(nil)
 )
 
-// Factory implements storage.Factory for Badger backend.
+// Factory for Badger backend.
 type Factory struct {
 	Config         *Config
 	store          *badger.DB
-	cache          *badgerStore.CacheStore
+	cache          *badgerstore.CacheStore
 	logger         *zap.Logger
 	metricsFactory metrics.Factory
 
 	tmpDir          string
 	maintenanceDone chan bool
+	bgWg            sync.WaitGroup
 
 	// TODO initialize via reflection; convert comments to tag 'description'.
 	metrics struct {
@@ -79,23 +77,7 @@ func NewFactory() *Factory {
 	}
 }
 
-// AddFlags implements storage.Configurable
-func (f *Factory) AddFlags(flagSet *flag.FlagSet) {
-	f.Config.AddFlags(flagSet)
-}
-
-// InitFromViper implements storage.Configurable
-func (f *Factory) InitFromViper(v *viper.Viper, logger *zap.Logger) {
-	f.Config.InitFromViper(v, logger)
-	f.configure(f.Config)
-}
-
-// configure initializes Factory from supplied Config.
-func (f *Factory) configure(config *Config) {
-	f.Config = config
-}
-
-// Initialize implements storage.Factory
+// Initialize performs internal initialization of the factory.
 func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger) error {
 	f.logger = logger
 	f.metricsFactory = metricsFactory
@@ -131,7 +113,7 @@ func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger)
 	}
 	f.store = store
 
-	f.cache = badgerStore.NewCacheStore(f.store, f.Config.TTL.Spans)
+	f.cache = badgerstore.NewCacheStore(f.store, f.Config.TTL.Spans)
 
 	f.metrics.ValueLogSpaceAvailable = metricsFactory.Gauge(metrics.Options{Name: valueLogSpaceAvailableName})
 	f.metrics.KeyLogSpaceAvailable = metricsFactory.Gauge(metrics.Options{Name: keyLogSpaceAvailableName})
@@ -140,8 +122,15 @@ func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger)
 
 	f.registerBadgerExpvarMetrics(metricsFactory)
 
-	go f.maintenance()
-	go f.metricsCopier()
+	f.bgWg.Add(2)
+	go func() {
+		defer f.bgWg.Done()
+		f.maintenance()
+	}()
+	go func() {
+		defer f.bgWg.Done()
+		f.metricsCopier()
+	}()
 
 	logger.Info("Badger storage configuration", zap.Any("configuration", opts))
 
@@ -155,26 +144,26 @@ func initializeDir(path string) {
 	}
 }
 
-// CreateSpanReader implements storage.Factory
+// CreateSpanReader creates a spanstore.Reader.
 func (f *Factory) CreateSpanReader() (spanstore.Reader, error) {
-	tr := badgerStore.NewTraceReader(f.store, f.cache, true)
+	tr := badgerstore.NewTraceReader(f.store, f.cache, true)
 	return spanstoremetrics.NewReaderDecorator(tr, f.metricsFactory), nil
 }
 
-// CreateSpanWriter implements storage.Factory
+// CreateSpanWriter creates a spanstore.Writer.
 func (f *Factory) CreateSpanWriter() (spanstore.Writer, error) {
-	return badgerStore.NewSpanWriter(f.store, f.cache, f.Config.TTL.Spans), nil
+	return badgerstore.NewSpanWriter(f.store, f.cache, f.Config.TTL.Spans), nil
 }
 
-// CreateDependencyReader implements storage.Factory
+// CreateDependencyReader creates a dependencystore.Reader.
 func (f *Factory) CreateDependencyReader() (dependencystore.Reader, error) {
 	sr, _ := f.CreateSpanReader() // err is always nil
-	return depStore.NewDependencyStore(sr), nil
+	return depstore.NewDependencyStore(sr), nil
 }
 
 // CreateSamplingStore implements storage.SamplingStoreFactory
 func (f *Factory) CreateSamplingStore(int /* maxBuckets */) (samplingstore.Store, error) {
-	return badgerSampling.NewSamplingStore(f.store), nil
+	return badgersampling.NewSamplingStore(f.store), nil
 }
 
 // CreateLock implements storage.SamplingStoreFactory
@@ -185,6 +174,7 @@ func (*Factory) CreateLock() (distributedlock.Lock, error) {
 // Close Implements io.Closer and closes the underlying storage
 func (f *Factory) Close() error {
 	close(f.maintenanceDone)
+	f.bgWg.Wait() // Wait for background goroutines to finish before closing store
 	if f.store == nil {
 		return nil
 	}
@@ -223,7 +213,7 @@ func (f *Factory) maintenance() {
 			}
 
 			f.metrics.LastMaintenanceRun.Update(t.UnixNano())
-			f.diskStatisticsUpdate()
+			_ = f.diskStatisticsUpdate()
 		}
 	}
 }
@@ -253,6 +243,8 @@ func (f *Factory) metricsCopier() {
 								}
 							}
 						})
+					default:
+						f.logger.Debug("skipping non-numeric badger expvar metric", zap.String("key", kv.Key))
 					}
 				}
 			})
@@ -278,6 +270,8 @@ func (f *Factory) registerBadgerExpvarMetrics(metricsFactory metrics.Factory) {
 						f.metrics.badgerMetrics[kv.Key] = g
 					}
 				})
+			default:
+				f.logger.Info("skipping non-numeric badger expvar metric", zap.String("key", kv.Key))
 			}
 		}
 	})

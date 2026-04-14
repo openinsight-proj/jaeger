@@ -41,8 +41,10 @@ receivers:
   kafka:
     brokers:
       - localhost:9092
-    topic: ${env:KAFKA_TOPIC:-jaeger-spans}
-    encoding: ${env:KAFKA_ENCODING:-otlp_proto}
+    traces:
+      topics:
+        - ${env:KAFKA_TOPIC:-jaeger-spans}
+      encoding: ${env:KAFKA_ENCODING:-otlp_proto}
     initial_offset: earliest
 
 processors:

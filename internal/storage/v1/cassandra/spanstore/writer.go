@@ -17,7 +17,7 @@ import (
 	"github.com/jaegertracing/jaeger-idl/model/v1"
 	"github.com/jaegertracing/jaeger/internal/metrics"
 	"github.com/jaegertracing/jaeger/internal/storage/cassandra"
-	casMetrics "github.com/jaegertracing/jaeger/internal/storage/cassandra/metrics"
+	casmetrics "github.com/jaegertracing/jaeger/internal/storage/cassandra/metrics"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/spanstore/dbmodel"
 )
 
@@ -69,11 +69,11 @@ type (
 )
 
 type spanWriterMetrics struct {
-	traces                *casMetrics.Table
-	tagIndex              *casMetrics.Table
-	serviceNameIndex      *casMetrics.Table
-	serviceOperationIndex *casMetrics.Table
-	durationIndex         *casMetrics.Table
+	traces                *casmetrics.Table
+	tagIndex              *casmetrics.Table
+	serviceNameIndex      *casmetrics.Table
+	serviceOperationIndex *casmetrics.Table
+	durationIndex         *casmetrics.Table
 }
 
 // SpanWriter handles all writes to Cassandra for the Jaeger data model
@@ -109,11 +109,11 @@ func NewSpanWriter(
 		serviceNamesWriter:   serviceNamesStorage.Write,
 		operationNamesWriter: operationNamesStorage.Write,
 		writerMetrics: spanWriterMetrics{
-			traces:                casMetrics.NewTable(metricsFactory, "traces"),
-			tagIndex:              casMetrics.NewTable(metricsFactory, "tag_index"),
-			serviceNameIndex:      casMetrics.NewTable(metricsFactory, "service_name_index"),
-			serviceOperationIndex: casMetrics.NewTable(metricsFactory, "service_operation_index"),
-			durationIndex:         casMetrics.NewTable(metricsFactory, "duration_index"),
+			traces:                casmetrics.NewTable(metricsFactory, "traces"),
+			tagIndex:              casmetrics.NewTable(metricsFactory, "tag_index"),
+			serviceNameIndex:      casmetrics.NewTable(metricsFactory, "service_name_index"),
+			serviceOperationIndex: casmetrics.NewTable(metricsFactory, "service_operation_index"),
+			durationIndex:         casmetrics.NewTable(metricsFactory, "duration_index"),
 		},
 		logger:          logger,
 		tagIndexSkipped: tagIndexSkipped,
@@ -133,7 +133,7 @@ func (s *SpanWriter) Close() error {
 func (s *SpanWriter) WriteSpan(_ context.Context, span *model.Span) error {
 	ds := dbmodel.FromDomain(span)
 	if s.storageMode&storeFlag == storeFlag {
-		if err := s.writeSpan(span, ds); err != nil {
+		if err := s.writeSpanToDB(span, ds); err != nil {
 			return err
 		}
 	}
@@ -145,7 +145,7 @@ func (s *SpanWriter) WriteSpan(_ context.Context, span *model.Span) error {
 	return nil
 }
 
-func (s *SpanWriter) writeSpan(_ *model.Span, ds *dbmodel.Span) error {
+func (s *SpanWriter) writeSpanToDB(_ *model.Span, ds *dbmodel.Span) error {
 	mainQuery := s.session.Query(
 		insertSpan,
 		ds.TraceID,
@@ -194,7 +194,7 @@ func (s *SpanWriter) writeIndexes(span *model.Span, ds *dbmodel.Span) error {
 		return nil // skipping expensive indexing
 	}
 
-	if err := s.indexByTags(span, ds); err != nil {
+	if err := s.indexByTags(ds); err != nil {
 		return s.logError(ds, err, "Failed to index tags", s.logger)
 	}
 
@@ -206,8 +206,8 @@ func (s *SpanWriter) writeIndexes(span *model.Span, ds *dbmodel.Span) error {
 	return nil
 }
 
-func (s *SpanWriter) indexByTags(span *model.Span, ds *dbmodel.Span) error {
-	for _, v := range dbmodel.GetAllUniqueTags(span, s.tagFilter) {
+func (s *SpanWriter) indexByTags(ds *dbmodel.Span) error {
+	for _, v := range dbmodel.GetAllUniqueTags(ds, s.tagFilter) {
 		// we should introduce retries or just ignore failures imo, retrying each individual tag insertion might be better
 		// we should consider bucketing.
 		if s.shouldIndexTag(v) {

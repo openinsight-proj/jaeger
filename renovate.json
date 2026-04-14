@@ -4,6 +4,8 @@
     "config:best-practices",
     ":gitSignOff"
   ],
+  "dependencyDashboard": true,
+  "dependencyDashboardHeader": "Project settings are at https://developer.mend.io/",
   "labels": [
     "changelog:dependencies"
   ],
@@ -55,6 +57,9 @@
         "go.opentelemetry.io/otel/**",
         "go.opentelemetry.io/contrib/**",
         "github.com/open-telemetry/opentelemetry-go-contrib/**"
+      ],
+      "schedule": [
+        "on friday"
       ]
     },
     {
@@ -64,6 +69,9 @@
       ],
       "matchPackageNames": [
         "go.opentelemetry.io/collector{/,}**"
+      ],
+      "schedule": [
+        "on friday"
       ]
     },
     {
@@ -73,6 +81,9 @@
       ],
       "matchPackageNames": [
         "github.com/open-telemetry/opentelemetry-collector-contrib{/,}**"
+      ],
+      "schedule": [
+        "on friday"
       ]
     },
     {
@@ -114,6 +125,54 @@
         "patch"
       ],
       "enabled": false
+    },
+    {
+      "groupName": "All Jaeger Docker images",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "cr.jaegertracing.io/jaegertracing/jaeger",
+        "cr.jaegertracing.io/jaegertracing/jaeger-tracegen"
+      ]
+    },
+    {
+      "groupName": "All ClickHouse packages",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchPackageNames": [
+        "github.com/ClickHouse/ch-go",
+        "github.com/ClickHouse/clickhouse-go/v2"
+      ]
+    },
+    {
+      "groupName": "OpenSearch 3.x docker images",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "opensearchproject/opensearch"
+      ],
+      "matchFileNames": [
+        "docker-compose/opensearch/v3/docker-compose.yml",
+        "docker-compose/monitor/docker-compose-opensearch.yml"
+      ],
+      "allowedVersions": "3.x"
+    },
+    {
+      "groupName": "Elasticsearch 9.x docker images",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "docker.elastic.co/elasticsearch/elasticsearch"
+      ],
+      "matchFileNames": [
+        "docker-compose/elasticsearch/v9/docker-compose.yml",
+        "docker-compose/monitor/docker-compose-elasticsearch.yml"
+      ],
+      "allowedVersions": "9.x"
     }
   ]
 }

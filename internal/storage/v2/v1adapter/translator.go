@@ -6,7 +6,7 @@ package v1adapter
 import (
 	"iter"
 
-	jaegerTranslator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger"
+	jaegertranslator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
@@ -18,24 +18,16 @@ import (
 // V1BatchesFromTraces converts OpenTelemetry traces (ptrace.Traces)
 // to Jaeger model batches ([]*model.Batch).
 func V1BatchesFromTraces(traces ptrace.Traces) []*model.Batch {
-	batches := jaegerTranslator.ProtoFromTraces(traces)
+	batches := jaegertranslator.ProtoFromTraces(traces)
 	spanMap := createSpanMapFromBatches(batches)
 	transferWarningsToModelSpans(traces, spanMap)
 	return batches
 }
 
-// ProtoFromTraces converts OpenTelemetry traces (ptrace.Traces)
-// to Jaeger model batches ([]*model.Batch).
-//
-// TODO remove this function in favor of V1BatchesFromTraces
-func ProtoFromTraces(traces ptrace.Traces) []*model.Batch {
-	return V1BatchesFromTraces(traces)
-}
-
 // V1BatchesToTraces converts Jaeger model batches ([]*model.Batch)
 // to OpenTelemetry traces (ptrace.Traces).
 func V1BatchesToTraces(batches []*model.Batch) ptrace.Traces {
-	traces, _ := jaegerTranslator.ProtoToTraces(batches) // never returns an error
+	traces, _ := jaegertranslator.ProtoToTraces(batches) // never returns an error
 	spanMap := jptrace.SpanMap(traces, func(s ptrace.Span) pcommon.SpanID {
 		return s.SpanID()
 	})

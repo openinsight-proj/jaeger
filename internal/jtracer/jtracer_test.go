@@ -15,27 +15,21 @@ import (
 	"github.com/jaegertracing/jaeger/internal/testutils"
 )
 
-func TestNew(t *testing.T) {
-	jt, err := New("serviceName")
+func TestNewProvider(t *testing.T) {
+	p, c, err := NewProvider(t.Context(), "serviceName")
 	require.NoError(t, err)
-	require.NotNil(t, jt.OTEL, "Expected OTEL not to be nil")
-	require.NotNil(t, jt.closer, "Expected closer not to be nil")
-
-	jt.Close(context.Background())
-}
-
-func TestNoOp(t *testing.T) {
-	jt := NoOp()
-	require.NotNil(t, jt.OTEL)
-	jt.Close(context.Background())
+	require.NotNil(t, p, "Expected OTEL not to be nil")
+	require.NotNil(t, c, "Expected closer not to be nil")
+	c(t.Context())
 }
 
 func TestNewHelperProviderError(t *testing.T) {
 	fakeErr := errors.New("fakeProviderError")
-	_, err := newHelper(
+	_, _, err := newProviderHelper(
+		t.Context(),
 		"svc",
-		func(_ context.Context, _ /* svc */ string) (*sdktrace.TracerProvider, error) {
-			return nil, fakeErr
+		func(_ context.Context, _ /* svc */ string) (*sdktrace.TracerProvider, func(), error) {
+			return nil, nil, fakeErr
 		})
 	require.Error(t, err)
 	require.EqualError(t, err, fakeErr.Error())
@@ -43,7 +37,7 @@ func TestNewHelperProviderError(t *testing.T) {
 
 func TestInitHelperExporterError(t *testing.T) {
 	fakeErr := errors.New("fakeExporterError")
-	_, err := initHelper(
+	_, _, err := initHelper(
 		context.Background(),
 		"svc",
 		func(_ context.Context) (sdktrace.SpanExporter, error) {
@@ -59,7 +53,7 @@ func TestInitHelperExporterError(t *testing.T) {
 
 func TestInitHelperResourceError(t *testing.T) {
 	fakeErr := errors.New("fakeResourceError")
-	tp, err := initHelper(
+	tp, _, err := initHelper(
 		context.Background(),
 		"svc",
 		otelExporter,

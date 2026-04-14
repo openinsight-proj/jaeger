@@ -16,10 +16,9 @@ import (
 )
 
 const (
-	spanStorageType = "span-storage.type" // deprecated
-	logLevel        = "log-level"
-	logEncoding     = "log-encoding" // json or console
-	configFile      = "config-file"
+	logLevel    = "log-level"
+	logEncoding = "log-encoding" // json or console
+	configFile  = "config-file"
 )
 
 // AddConfigFileFlag adds flags for ExternalConfFlags
@@ -40,16 +39,16 @@ func TryLoadConfigFile(v *viper.Viper) error {
 }
 
 // ParseJaegerTags parses the Jaeger tags string into a map.
-func ParseJaegerTags(jaegerTags string) map[string]string {
+func ParseJaegerTags(jaegerTags string) (map[string]string, error) {
 	if jaegerTags == "" {
-		return nil
+		return nil, nil
 	}
 	tagPairs := strings.Split(string(jaegerTags), ",")
 	tags := make(map[string]string)
 	for _, p := range tagPairs {
 		kv := strings.SplitN(p, "=", 2)
 		if len(kv) != 2 {
-			panic(fmt.Sprintf("invalid Jaeger tag pair %q, expected key=value", p))
+			return nil, fmt.Errorf("invalid Jaeger tag pair %q, expected key=value", p)
 		}
 		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
 
@@ -78,7 +77,7 @@ func ParseJaegerTags(jaegerTags string) map[string]string {
 		tags[k] = v
 	}
 
-	return tags
+	return tags, nil
 }
 
 // SharedFlags holds flags configuration
@@ -90,12 +89,6 @@ type SharedFlags struct {
 type logging struct {
 	Level    string
 	Encoding string
-}
-
-// AddFlags adds flags for SharedFlags
-func AddFlags(flagSet *flag.FlagSet) {
-	flagSet.String(spanStorageType, "", "(deprecated) please use SPAN_STORAGE_TYPE environment variable. Run this binary with the 'env' command for help.")
-	AddLoggingFlags(flagSet)
 }
 
 // AddLoggingFlag adds logging flag for SharedFlags

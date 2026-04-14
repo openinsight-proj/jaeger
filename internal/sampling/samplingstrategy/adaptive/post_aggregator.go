@@ -26,8 +26,6 @@ const (
 
 	// The number of past entries for samplingCache the leader keeps in memory
 	serviceCacheSize = 25
-
-	defaultResourceName = "sampling_store_leader"
 )
 
 var (
@@ -128,12 +126,11 @@ func newPostAggregator(
 }
 
 // Start initializes and starts the sampling postAggregator which regularly calculates sampling probabilities.
-func (p *PostAggregator) Start() error {
+func (p *PostAggregator) Start() {
 	p.logger.Info("starting adaptive sampling postAggregator")
 	// NB: the first tick will be slightly delayed by the initializeThroughput call.
 	p.lastCheckedTime = time.Now().Add(p.Delay * -1)
 	p.initializeThroughput(p.lastCheckedTime)
-	return nil
 }
 
 func (p *PostAggregator) isLeader() bool {
@@ -145,7 +142,11 @@ func (p *PostAggregator) isLeader() bool {
 // trying to acquire the lock. With jitter, we can reduce the average amount of time before a
 // new leader is elected. Furthermore, jitter can be used to spread out read load on storage.
 func addJitter(jitterAmount time.Duration) time.Duration {
-	return (jitterAmount / 2) + time.Duration(rand.Int63n(int64(jitterAmount/2)))
+	half := jitterAmount / 2
+	if half <= 0 {
+		return jitterAmount
+	}
+	return half + time.Duration(rand.Int63n(int64(half)))
 }
 
 func (p *PostAggregator) runCalculation() {
@@ -292,7 +293,8 @@ func (p *PostAggregator) calculateWeightedQPS(allQPS []float64) float64 {
 	}
 	weights := p.weightVectorCache.GetWeights(len(allQPS))
 	var qps float64
-	for i := 0; i < len(allQPS); i++ {
+	for i := range allQPS {
+		// #nosec G602 GetWeights always returns a slice of the same length as allQPS
 		qps += allQPS[i] * weights[i]
 	}
 	return qps

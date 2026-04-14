@@ -7,11 +7,8 @@ package cassandra
 import (
 	"context"
 	"errors"
-	"flag"
 	"io"
 
-	"github.com/spf13/viper"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
@@ -21,35 +18,26 @@ import (
 	"github.com/jaegertracing/jaeger/internal/storage/cassandra"
 	"github.com/jaegertracing/jaeger/internal/storage/cassandra/config"
 	gocqlw "github.com/jaegertracing/jaeger/internal/storage/cassandra/gocql"
-	cLock "github.com/jaegertracing/jaeger/internal/storage/distributedlock/cassandra"
+	caslock "github.com/jaegertracing/jaeger/internal/storage/distributedlock/cassandra"
 	"github.com/jaegertracing/jaeger/internal/storage/v1"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/dependencystore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/samplingstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore"
-	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore/spanstoremetrics"
-	cDepStore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/dependencystore"
-	cSamplingStore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/samplingstore"
+	cdepstore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/dependencystore"
+	csamplingstore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/samplingstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/schema"
-	cSpanStore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/spanstore"
+	cspanstore "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/spanstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/cassandra/spanstore/dbmodel"
 )
 
-const (
-	primaryStorageNamespace = "cassandra"
-	archiveStorageNamespace = "cassandra-archive"
-)
-
 var ( // interface comformance checks
-	_ storage.Factory              = (*Factory)(nil)
 	_ storage.Purger               = (*Factory)(nil)
 	_ storage.SamplingStoreFactory = (*Factory)(nil)
 	_ io.Closer                    = (*Factory)(nil)
-	_ storage.Configurable         = (*Factory)(nil)
-	_ storage.Inheritable          = (*Factory)(nil)
 	_ storage.ArchiveCapable       = (*Factory)(nil)
 )
 
-// Factory implements storage.Factory for Cassandra backend.
+// Factory for Cassandra backend.
 type Factory struct {
 	Options *Options
 
@@ -68,29 +56,9 @@ type Factory struct {
 // NewFactory creates a new Factory.
 func NewFactory() *Factory {
 	return &Factory{
-		tracer:           otel.GetTracerProvider(),
-		Options:          NewOptions(primaryStorageNamespace),
+		Options:          NewOptions(),
 		sessionBuilderFn: NewSession,
 	}
-}
-
-func NewArchiveFactory() *Factory {
-	return &Factory{
-		tracer:           otel.GetTracerProvider(),
-		Options:          NewOptions(archiveStorageNamespace),
-		sessionBuilderFn: NewSession,
-	}
-}
-
-// AddFlags implements storage.Configurable
-func (f *Factory) AddFlags(flagSet *flag.FlagSet) {
-	f.Options.AddFlags(flagSet)
-}
-
-// InitFromViper implements storage.Configurable
-func (f *Factory) InitFromViper(v *viper.Viper, _ *zap.Logger) {
-	f.Options.InitFromViper(v)
-	f.ConfigureFromOptions(f.Options)
 }
 
 // InitFromOptions initializes factory from options.
@@ -99,11 +67,11 @@ func (f *Factory) ConfigureFromOptions(o *Options) {
 	f.config = o.GetConfig()
 }
 
-// Initialize implements storage.Factory
-func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger) error {
+// Initialize performs internal initialization of the factory.
+func (f *Factory) Initialize(metricsFactory metrics.Factory, logger *zap.Logger, tracer trace.TracerProvider) error {
 	f.metricsFactory = metricsFactory
 	f.logger = logger
-
+	f.tracer = tracer
 	session, err := f.sessionBuilderFn(&f.config)
 	if err != nil {
 		return err
@@ -156,27 +124,23 @@ func NewSession(c *config.Configuration) (cassandra.Session, error) {
 }
 
 // CreateSpanReader implements storage.Factory
-func (f *Factory) CreateSpanReader() (spanstore.Reader, error) {
-	sr, err := cSpanStore.NewSpanReader(f.session, f.metricsFactory, f.logger, f.tracer.Tracer("cSpanStore.SpanReader"))
-	if err != nil {
-		return nil, err
-	}
-	return spanstoremetrics.NewReaderDecorator(sr, f.metricsFactory), nil
+func (*Factory) CreateSpanReader() (spanstore.Reader, error) {
+	return nil, errors.New("not implemented")
 }
 
-// CreateSpanWriter implements storage.Factory
+// CreateSpanWriter creates a spanstore.Writer.
 func (f *Factory) CreateSpanWriter() (spanstore.Writer, error) {
 	options, err := writerOptions(f.Options)
 	if err != nil {
 		return nil, err
 	}
-	return cSpanStore.NewSpanWriter(f.session, f.Options.SpanStoreWriteCacheTTL, f.metricsFactory, f.logger, options...)
+	return cspanstore.NewSpanWriter(f.session, f.Options.SpanStoreWriteCacheTTL, f.metricsFactory, f.logger, options...)
 }
 
-// CreateDependencyReader implements storage.Factory
+// CreateDependencyReader creates a dependencystore.Reader.
 func (f *Factory) CreateDependencyReader() (dependencystore.Reader, error) {
-	version := cDepStore.GetDependencyVersion(f.session)
-	return cDepStore.NewDependencyStore(f.session, f.metricsFactory, f.logger, version)
+	version := cdepstore.GetDependencyVersion(f.session)
+	return cdepstore.NewDependencyStore(f.session, f.metricsFactory, f.logger, version)
 }
 
 // CreateLock implements storage.SamplingStoreFactory
@@ -187,7 +151,7 @@ func (f *Factory) CreateLock() (distributedlock.Lock, error) {
 	}
 	f.logger.Info("Using unique participantName in the distributed lock", zap.String("participantName", hostId))
 
-	return cLock.NewLock(f.session, hostId), nil
+	return caslock.NewLock(f.session, hostId), nil
 }
 
 // CreateSamplingStore implements storage.SamplingStoreFactory
@@ -199,10 +163,10 @@ func (f *Factory) CreateSamplingStore(int /* maxBuckets */) (samplingstore.Store
 			},
 		},
 	)
-	return cSamplingStore.New(f.session, samplingMetricsFactory, f.logger), nil
+	return csamplingstore.New(f.session, samplingMetricsFactory, f.logger), nil
 }
 
-func writerOptions(opts *Options) ([]cSpanStore.Option, error) {
+func writerOptions(opts *Options) ([]cspanstore.Option, error) {
 	var tagFilters []dbmodel.TagFilter
 
 	// drop all tag filters
@@ -225,10 +189,10 @@ func writerOptions(opts *Options) ([]cSpanStore.Option, error) {
 	if len(tagFilters) == 0 {
 		return nil, nil
 	} else if len(tagFilters) == 1 {
-		return []cSpanStore.Option{cSpanStore.TagFilter(tagFilters[0])}, nil
+		return []cspanstore.Option{cspanstore.TagFilter(tagFilters[0])}, nil
 	}
 
-	return []cSpanStore.Option{cSpanStore.TagFilter(dbmodel.NewChainedTagFilter(tagFilters...))}, nil
+	return []cspanstore.Option{cspanstore.TagFilter(dbmodel.NewChainedTagFilter(tagFilters...))}, nil
 }
 
 var _ io.Closer = (*Factory)(nil)
@@ -246,13 +210,10 @@ func (f *Factory) Purge(_ context.Context) error {
 	return f.session.Query("TRUNCATE traces").Exec()
 }
 
-func (f *Factory) InheritSettingsFrom(other storage.Factory) {
-	if otherFactory, ok := other.(*Factory); ok {
-		f.config.ApplyDefaults(&otherFactory.config)
-	}
+func (f *Factory) IsArchiveCapable() bool {
+	return f.Options.ArchiveEnabled
 }
 
-func (f *Factory) IsArchiveCapable() bool {
-	return f.Options.NamespaceConfig.namespace == archiveStorageNamespace &&
-		f.Options.NamespaceConfig.Enabled
+func (f *Factory) GetSession() cassandra.Session {
+	return f.session
 }

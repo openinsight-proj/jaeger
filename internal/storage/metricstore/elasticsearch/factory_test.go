@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func newTestFactoryConfig(serverURL string) config.Configuration {
 func TestCreateMetricsReader(t *testing.T) {
 	server := setupMockServer(t, mockESServerResponse, http.StatusOK)
 	cfg := newTestFactoryConfig(server.URL)
-	f, err := NewFactory(context.Background(), cfg, telemetry.NoopSettings())
+	f, err := NewFactory(context.Background(), cfg, telemetry.NoopSettings(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, f)
 	defer require.NoError(t, f.Close())
@@ -102,8 +103,9 @@ func TestNewFactory(t *testing.T) {
 			if tt.response != nil && tt.statusCode != 0 {
 				server := setupMockServer(t, tt.response, tt.statusCode)
 				tt.cfg.Servers = []string{server.URL}
+				tt.cfg.HealthCheckTimeoutStartup = 100 * time.Millisecond
 			}
-			f, err := NewFactory(context.Background(), tt.cfg, telemetry.NoopSettings())
+			f, err := NewFactory(context.Background(), tt.cfg, telemetry.NoopSettings(), nil)
 
 			if tt.expectedErr {
 				require.Error(t, err)
@@ -115,4 +117,41 @@ func TestNewFactory(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewFactoryWithAuthenticator(t *testing.T) {
+	mockServer := setupMockServer(t, mockESServerResponse, http.StatusOK)
+	cfg := newTestFactoryConfig(mockServer.URL)
+
+	mockAuth := &mockHTTPAuthenticator{}
+
+	// Test with authenticator
+	f, err := NewFactory(context.Background(), cfg, telemetry.NoopSettings(), mockAuth)
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	defer require.NoError(t, f.Close())
+
+	reader, err := f.CreateMetricsReader()
+	require.NoError(t, err)
+	assert.NotNil(t, reader)
+}
+
+// mockHTTPAuthenticator implements extensionauth.HTTPClient for testing
+type mockHTTPAuthenticator struct{}
+
+func (*mockHTTPAuthenticator) RoundTripper(base http.RoundTripper) (http.RoundTripper, error) {
+	return &mockRoundTripper{base: base}, nil
+}
+
+// mockRoundTripper wraps the base RoundTripper
+type mockRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer mock-token")
+	if m.base != nil {
+		return m.base.RoundTrip(req)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 }
