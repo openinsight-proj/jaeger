@@ -40,7 +40,7 @@ func newExtension(config *Config, telset component.TelemetrySettings) *expvarExt
 }
 
 func (c *expvarExtension) Start(ctx context.Context, host component.Host) error {
-	server, err := c.config.ToServer(ctx, host, c.telset, expvar.Handler())
+	server, err := c.config.ToServer(ctx, host.GetExtensions(), c.telset, expvar.Handler())
 	if err != nil {
 		return err
 	}
@@ -50,15 +50,12 @@ func (c *expvarExtension) Start(ctx context.Context, host component.Host) error 
 		return err
 	}
 	c.telset.Logger.Info("Starting expvar server", zap.Stringer("addr", hln.Addr()))
-	c.shutdownWG.Add(1)
-	go func() {
-		defer c.shutdownWG.Done()
-
+	c.shutdownWG.Go(func() {
 		if err := c.server.Serve(hln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			err = fmt.Errorf("error starting expvar server: %w", err)
 			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(err))
 		}
-	}()
+	})
 	return nil
 }
 

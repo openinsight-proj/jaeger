@@ -1,11 +1,14 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# Integration tests for OpenSearch storage backend, covering major versions 1.x through 3.x.
+# direct: classic tests at the storage API layer, directly instantiating the storage implementation.
+# e2e: multi-process E2E tests via the trace ingestion and query APIs.
+
 name: CIT OpenSearch
 
 on:
   workflow_call:
-
-concurrency:
-  group: cit-opensearch-${{ github.workflow }}-${{ (github.event.pull_request && github.event.pull_request.number) || github.ref || github.run_id }}
-  cancel-in-progress: true
 
 # See https://github.com/ossf/scorecard/blob/main/docs/checks.md#token-permissions
 permissions:  # added using https://github.com/step-security/secure-workflows
@@ -20,39 +23,39 @@ jobs:
         version:
         - major: 1.x
           distribution: opensearch
-          jaeger: v1
+          storage_test: direct
         - major: 2.x
           distribution: opensearch
-          jaeger: v1
+          storage_test: direct
         - major: 2.x
           distribution: opensearch
-          jaeger: v2
+          storage_test: e2e
         - major: 3.x
           distribution: opensearch
-          jaeger: v2
-    name: ${{ matrix.version.distribution }} ${{ matrix.version.major }} ${{ matrix.version.jaeger }}
+          storage_test: e2e
+    name: ${{ matrix.version.distribution }} ${{ matrix.version.major }} ${{ matrix.version.storage_test }}
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+      uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
       with:
         egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
-    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
       with:
         submodules: true
 
-    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+    - uses: ./.github/actions/setup-go
       with:
-        go-version: 1.25.x
+        go-version: 1.26.x
 
-    - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+    - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
     - name: Run ${{ matrix.version.distribution }} integration tests
       id: test-execution
-      run: bash scripts/e2e/elasticsearch.sh ${{ matrix.version.distribution }} ${{ matrix.version.major }} ${{ matrix.version.jaeger }}
+      run: bash scripts/e2e/elasticsearch.sh ${{ matrix.version.distribution }} ${{ matrix.version.major }} ${{ matrix.version.storage_test }}
 
     - uses: ./.github/actions/verify-metrics-snapshot
-      if: matrix.version.jaeger == 'v2'
+      if: matrix.version.storage_test == 'e2e'
       with:
         snapshot: metrics_snapshot_opensearch
         artifact_key: metrics_snapshot_opensearch_${{ matrix.version.major }}
@@ -61,4 +64,4 @@ jobs:
       uses: ./.github/actions/upload-codecov
       with:
         files: cover.out,cover-index-cleaner.out,cover-index-rollover.out
-        flags: ${{ matrix.version.distribution }}-${{ matrix.version.major }}-${{ matrix.version.jaeger }}
+        flag: ${{ matrix.version.distribution }}-${{ matrix.version.major }}-${{ matrix.version.storage_test }}

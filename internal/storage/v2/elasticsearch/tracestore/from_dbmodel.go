@@ -75,7 +75,7 @@ func dbSpansToSpans(dbSpans []dbmodel.Span, resourceSpans ptrace.ResourceSpansSl
 }
 
 func dbSpanToSpan(dbSpan *dbmodel.Span, span ptrace.Span) error {
-	traceId, err := fromDbTraceId(dbSpan.TraceID)
+	traceId, err := convertTraceIDFromDB(dbSpan.TraceID)
 	if err != nil {
 		return err
 	}
@@ -338,8 +338,6 @@ func getStatusCodeFromHTTPStatusAttr(attrVal pcommon.Value, kind ptrace.SpanKind
 	// failed to interpret, span status MUST be set to Error.
 	if statusCode >= 400 && statusCode < 500 {
 		switch kind {
-		case ptrace.SpanKindClient:
-			return ptrace.StatusCodeError, nil
 		case ptrace.SpanKindServer:
 			return ptrace.StatusCodeUnset, nil
 		default:
@@ -419,7 +417,7 @@ func dbSpanRefsToSpanEvents(refs []dbmodel.Reference, excludeParentID dbmodel.Sp
 		}
 
 		link := spanLinks.AppendEmpty()
-		refTraceId, err := fromDbTraceId(ref.TraceID)
+		refTraceId, err := convertTraceIDFromDB(ref.TraceID)
 		if err != nil {
 			return err
 		}

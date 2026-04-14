@@ -33,13 +33,13 @@ ALL_SRC = $(shell find . -name '*.go' \
 				   -not -path './internal/tools/*' \
 				   -not -path './scripts/build/docker/debug/*' \
 				   -not -path '*/mocks/*' \
-				   -not -path '*/thrift-0.9.2/*' \
 				   -type f | \
 				sort)
 
 # All .sh or .py or Makefile or .mk files that should be auto-formatted and linted.
 SCRIPTS_SRC = $(shell find . \( -name '*.sh' -o -name '*.py' -o -name '*.mk' -o -name 'Makefile*' -o -name 'Dockerfile*' \) \
 						-not -path './.git/*' \
+						-not -path './vendor/*' \
 						-not -path './idl/*' \
 						-not -path './jaeger-ui/*' \
 						-type f | \
@@ -67,23 +67,22 @@ else
 	SED=sed
 endif
 
-GOTEST_QUIET=$(GO) test $(RACE)
-GOTEST=$(GOTEST_QUIET) -v
 COVEROUT=cover.out
 GOFMT=gofmt
 FMT_LOG=.fmt.log
 IMPORT_LOG=.import.log
-COLORIZE ?= | $(SED) 's/PASS/✅ PASS/g' | $(SED) 's/FAIL/❌ FAIL/g' | $(SED) 's/SKIP/🔕 SKIP/g'
+GOTESTSUM_FLAGS=--format pkgname-and-test-fails --format-icons hivis
 
- # import other Makefiles after the variables are defined
+# Import other Makefiles after the variables are defined.
+# The order is important as some Makefiles depend on variables
+# defined in this file and other includes.
 
+include scripts/makefiles/Tools.mk
 include scripts/makefiles/BuildBinaries.mk
 include scripts/makefiles/BuildInfo.mk
-include scripts/makefiles/Crossdock.mk
 include scripts/makefiles/Docker.mk
 include scripts/makefiles/IntegrationTests.mk
 include scripts/makefiles/Protobuf.mk
-include scripts/makefiles/Tools.mk
 include scripts/makefiles/Windows.mk
 
 
@@ -92,13 +91,9 @@ include scripts/makefiles/Windows.mk
 .PHONY: test-and-lint
 test-and-lint: test fmt lint
 
-.PHONY: echo-v1
-echo-v1:
-	@echo "$(GIT_CLOSEST_TAG_V1)"
-
-.PHONY: echo-v2
-echo-v2:
-	@echo "$(GIT_CLOSEST_TAG_V2)"
+.PHONY: echo-version
+echo-version:
+	@echo "$(GIT_CLOSEST_TAG)"
 
 .PHONY: echo-platforms
 echo-platforms:
@@ -120,17 +115,17 @@ echo-all-srcs:
 clean:
 	rm -rf cover*.out .cover/ cover.html $(FMT_LOG) $(IMPORT_LOG) \
 		jaeger-ui/packages/jaeger-ui/build
-	find ./cmd/query/app/ui/actual -type f -name '*.gz' -delete
+	find ./cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual -type f -name '*.gz' -delete
 	GOCACHE=$(GOCACHE) go clean -cache -testcache
 	bash scripts/build/clean-binaries.sh
 
 .PHONY: test
-test:
-	bash -c "set -e; set -o pipefail; $(GOTEST) -tags=memory_storage_integration ./... $(COLORIZE)"
+test: $(GOTESTSUM)
+	$(GOTESTSUM) $(GOTESTSUM_FLAGS) -- $(RACE) -tags=memory_storage_integration ./...
 
 .PHONY: cover
-cover: nocover
-	bash -c "set -e; set -o pipefail; STORAGE=memory $(GOTEST) -timeout 5m -coverprofile $(COVEROUT) ./... | tee test-results.json"
+cover: nocover $(GOTESTSUM)
+	STORAGE=memory $(GOTESTSUM) $(GOTESTSUM_FLAGS) --rerun-fails --packages ./... -- $(RACE) -timeout 5m -coverprofile $(COVEROUT)
 	go tool cover -html=cover.out -o cover.html
 
 .PHONY: nocover
@@ -150,7 +145,13 @@ fmt: $(GOFUMPT)
 	@./scripts/lint/updateLicense.py $(ALL_SRC) $(SCRIPTS_SRC)
 
 .PHONY: lint
-lint: lint-license lint-imports lint-semconv lint-goversion lint-goleak lint-go
+lint: lint-fmt lint-license lint-imports lint-semconv lint-goversion lint-goleak lint-go lint-monitoring
+
+.PHONY: lint-monitoring
+lint-monitoring:
+	@cd ./monitoring/jaeger-mixin/generate && go run . | diff -q ../dashboard-for-grafana.json - > /dev/null || \
+		(echo "ERROR: dashboard-for-grafana.json is out of sync. Run 'make generate-dashboards'."; exit 1)
+	@echo "OK: dashboard-for-grafana.json is in sync."
 
 .PHONY: lint-license
 lint-license:
@@ -174,6 +175,14 @@ lint-imports:
 	@./scripts/lint/import-order-cleanup.py -o stdout -t $(ALL_SRC) > $(IMPORT_LOG)
 	@[ ! -s "$(IMPORT_LOG)" ] || (echo "Import ordering failures, run 'make fmt'" | cat - $(IMPORT_LOG) && false)
 
+.PHONY: lint-fmt
+lint-fmt: $(GOFUMPT)
+	@echo Verifying that all Go files are formatted with gofmt and gofumpt
+	@rm -f $(FMT_LOG)
+	@$(GOFMT) -d -e -s $(ALL_SRC) > $(FMT_LOG) || true
+	@$(GOFUMPT) -d -e $(ALL_SRC) >> $(FMT_LOG) || true
+	@[ ! -s "$(FMT_LOG)" ] || (echo "Formatting check failed. Please run 'make fmt'" && head -100 $(FMT_LOG) && false)
+
 .PHONY: lint-semconv
 lint-semconv:
 	./scripts/lint/check-semconv-version.sh
@@ -191,6 +200,10 @@ lint-goleak:
 lint-go: $(LINT)
 	$(LINT) -v run
 
+.PHONY: govulncheck
+govulncheck: $(GOVULNCHECK)
+	$(GOVULNCHECK) ./...
+
 .PHONY: lint-jaeger-idl-versions
 lint-jaeger-idl-versions:
 	@echo "checking jaeger-idl version mismatch between git submodule and go.mod dependency"
@@ -202,14 +215,22 @@ run-all-in-one: build-ui
 
 .PHONY: changelog
 changelog:
-	./scripts/release/notes.py --exclude-dependabot --verbose
+	@./scripts/release/notes.py --exclude-dependabot --verbose
 
 .PHONY: draft-release
 draft-release:
 	./scripts/release/draft.py
 
+.PHONY: prepare-release
+prepare-release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make prepare-release VERSION=x.x.x"; \
+		echo "Example: make prepare-release VERSION=2.14.0"; \
+		exit 1; \
+	fi
+	bash ./scripts/release/prepare.sh $(VERSION)
+
 .PHONY: test-ci
-test-ci: GOTEST := $(GOTEST_QUIET)
 test-ci: build-examples cover
 
 .PHONY: init-submodules
@@ -217,6 +238,10 @@ init-submodules:
 	git submodule update --init --recursive
 
 MOCKERY_FLAGS := --all --disable-version-string
+.PHONY: generate-dashboards
+generate-dashboards:
+	cd ./monitoring/jaeger-mixin/generate && go run . > ../dashboard-for-grafana.json
+
 .PHONY: generate-mocks
 generate-mocks: $(MOCKERY)
 	find . -path '*/mocks/*' -name '*.go' -type f -delete

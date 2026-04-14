@@ -1,16 +1,14 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# E2E integration tests for Service Performance Monitoring (SPM), verifying
+# that span metrics are correctly derived and served via the metrics API,
+# with Prometheus, Elasticsearch, and OpenSearch as the metrics store.
+
 name: Test SPM
 
 on:
-  merge_group:
-  push:
-    branches: [main]
-
-  pull_request:
-    branches: [main]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ (github.event.pull_request && github.event.pull_request.number) || github.ref || github.run_id }}
-  cancel-in-progress: true
+  workflow_call:
 
 # See https://github.com/ossf/scorecard/blob/main/docs/checks.md#token-permissions
 permissions:
@@ -23,26 +21,20 @@ jobs:
       fail-fast: false
       matrix:
         mode:
-        - name: v1
-          binary: all-in-one
-          metricstore: prometheus
         - name: v2
-          binary: jaeger
           metricstore: prometheus
         - name: v2 with ES
-          binary: jaeger
           metricstore: elasticsearch
         - name: v2 with OS
-          binary: jaeger
           metricstore: opensearch
 
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+      uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
       with:
         egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
-    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
       with:
         submodules: true
 
@@ -50,13 +42,13 @@ jobs:
       run: |
         git fetch --prune --unshallow --tags
 
-    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+    - uses: ./.github/actions/setup-go
       with:
-        go-version: 1.25.x
+        go-version: 1.26.x
 
     - name: Setup Node.js version
       uses: ./.github/actions/setup-node.js
       
     - name: Run SPM Test
-      run:  bash scripts/e2e/spm.sh -b ${{ matrix.mode.binary }} -m ${{ matrix.mode.metricstore }}
+      run:  bash scripts/e2e/spm.sh -m ${{ matrix.mode.metricstore }}
 

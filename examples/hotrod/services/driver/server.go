@@ -10,6 +10,7 @@ import (
 	"net"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -32,7 +33,10 @@ var _ DriverServiceServer = (*Server)(nil)
 func NewServer(hostPort string, otelExporter string, metricsFactory metrics.Factory, logger log.Factory) *Server {
 	tracerProvider := tracing.InitOTEL("driver", otelExporter, metricsFactory, logger)
 	server := grpc.NewServer(
-		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpc.WithTracerProvider(tracerProvider))),
+		grpc.StatsHandler(otelgrpc.NewServerHandler(
+			otelgrpc.WithTracerProvider(tracerProvider),
+			otelgrpc.WithMeterProvider(noop.NewMeterProvider()),
+		)),
 	)
 	return &Server{
 		hostPort: hostPort,
@@ -66,7 +70,7 @@ func (s *Server) FindNearest(ctx context.Context, location *DriverLocationReques
 	for i, driverID := range driverIDs {
 		var drv Driver
 		var err error
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			drv, err = s.redis.GetDriver(ctx, driverID)
 			if err == nil {
 				break

@@ -336,18 +336,6 @@ func makeResponse(samplerType api_v2.SamplingStrategyType, param float64) (resp 
 	return resp
 }
 
-func TestDeepCopy(t *testing.T) {
-	s := &api_v2.SamplingStrategyResponse{
-		StrategyType: api_v2.SamplingStrategyType_PROBABILISTIC,
-		ProbabilisticSampling: &api_v2.ProbabilisticSamplingStrategy{
-			SamplingRate: 0.5,
-		},
-	}
-	cp := deepCopy(s)
-	assert.NotSame(t, cp, s)
-	assert.Equal(t, cp, s)
-}
-
 func TestAutoUpdateStrategyWithFile(t *testing.T) {
 	tempFile, _ := os.Create(t.TempDir() + "for_go_test_*.json")
 	require.NoError(t, tempFile.Close())
@@ -380,7 +368,7 @@ func TestAutoUpdateStrategyWithFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(dstFile, []byte(newStr), 0o644))
 
 	// wait for reload timer
-	for i := 0; i < 1000; i++ { // wait up to 1sec
+	for range 1000 { // wait up to 1sec
 		s, err = provider.GetSamplingStrategy(context.Background(), "foo")
 		require.NoError(t, err)
 		if s.ProbabilisticSampling != nil && s.ProbabilisticSampling.SamplingRate == 0.9 {
@@ -421,7 +409,7 @@ func TestAutoUpdateStrategyWithURL(t *testing.T) {
 	}
 
 	// wait for reload timer
-	for i := 0; i < 1000; i++ { // wait up to 1sec
+	for range 1000 { // wait up to 1sec
 		s, err = provider.GetSamplingStrategy(context.Background(), "foo")
 		require.NoError(t, err)
 		if s.ProbabilisticSampling != nil && s.ProbabilisticSampling.SamplingRate == 0.9 {

@@ -1,11 +1,16 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# E2E integration tests for a two-process deployment topology:
+#   - collector (config-remote-storage-backend.yaml): receives OTLP traces,
+#     writes to in-memory storage, exposes it via the remote_storage gRPC extension.
+#   - query (config-query.yaml): no ingestion pipeline, serves the query API
+#     by reading from the collector's remote_storage gRPC endpoint.
+
 name: CIT Query
 
 on:
   workflow_call:
-
-concurrency:
-  group: cit-query-${{ github.workflow }}-${{ (github.event.pull_request && github.event.pull_request.number) || github.ref || github.run_id }}
-  cancel-in-progress: true
 
 # See https://github.com/ossf/scorecard/blob/main/docs/checks.md#token-permissions
 permissions:  # added using https://github.com/step-security/secure-workflows
@@ -16,15 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+      uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
       with:
         egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
-    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         
-    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+    - uses: ./.github/actions/setup-go
       with:
-        go-version: 1.25.x
+        go-version: 1.26.x
 
     - name: Run Memory storage integration tests
       run: |
@@ -34,4 +39,4 @@ jobs:
       uses: ./.github/actions/upload-codecov
       with:
         files: cover.out
-        flags: query
+        flag: query

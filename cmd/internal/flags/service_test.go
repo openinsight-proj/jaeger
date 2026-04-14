@@ -15,14 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jaegertracing/jaeger/internal/config"
-	"github.com/jaegertracing/jaeger/internal/healthcheck"
 )
 
 func TestAddFlags(*testing.T) {
 	s := NewService(0)
-	s.AddFlags(new(flag.FlagSet))
-
-	s.NoStorage = true
 	s.AddFlags(new(flag.FlagSet))
 }
 
@@ -81,9 +77,8 @@ func TestStartErrors(t *testing.T) {
 			}
 			go s.RunAndThen(shutdown)
 
-			waitForEqual(t, healthcheck.Ready, func() any { return s.HC().Get() })
-			s.HC().Set(healthcheck.Unavailable)
-			waitForEqual(t, healthcheck.Unavailable, func() any { return s.HC().Get() })
+			// Give time for RunAndThen to start
+			time.Sleep(100 * time.Millisecond)
 
 			s.signalsChannel <- os.Interrupt
 			waitForEqual(t, true, func() any { return stopped.Load() })
@@ -92,7 +87,7 @@ func TestStartErrors(t *testing.T) {
 }
 
 func waitForEqual(t *testing.T, expected any, getter func() any) {
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		value := getter()
 		if reflect.DeepEqual(value, expected) {
 			return

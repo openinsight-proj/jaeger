@@ -22,19 +22,14 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/jaegertracing/jaeger-idl/model/v1"
-	"github.com/jaegertracing/jaeger/cmd/internal/flags"
 	"github.com/jaegertracing/jaeger/internal/grpctest"
-	"github.com/jaegertracing/jaeger/internal/healthcheck"
-	"github.com/jaegertracing/jaeger/internal/proto-gen/storage_v1"
+	"github.com/jaegertracing/jaeger/internal/proto-gen/storage/v2"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/depstore"
-	depstoremocks "github.com/jaegertracing/jaeger/internal/storage/v2/api/depstore/mocks"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
 	tracestoremocks "github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore/mocks"
 	"github.com/jaegertracing/jaeger/internal/telemetry"
 	"github.com/jaegertracing/jaeger/internal/tenancy"
-	"github.com/jaegertracing/jaeger/ports"
 )
 
 var testCertKeyLocation = "../../../internal/config/tlscfg/testdata"
@@ -43,11 +38,9 @@ func TestNewServer_CreateStorageErrors(t *testing.T) {
 	createServer := func(factory *fakeFactory) (*Server, error) {
 		return NewServer(
 			context.Background(),
-			&Options{
-				ServerConfig: configgrpc.ServerConfig{
-					NetAddr: confignet.AddrConfig{
-						Endpoint: ":0",
-					},
+			configgrpc.ServerConfig{
+				NetAddr: confignet.AddrConfig{
+					Endpoint: ":0",
 				},
 			},
 			factory,
@@ -79,11 +72,9 @@ func TestNewServer_CreateStorageErrors(t *testing.T) {
 
 func TestServerStart_BadPortErrors(t *testing.T) {
 	srv := &Server{
-		opts: &Options{
-			ServerConfig: configgrpc.ServerConfig{
-				NetAddr: confignet.AddrConfig{
-					Endpoint: ":-1",
-				},
+		grpcCfg: configgrpc.ServerConfig{
+			NetAddr: confignet.AddrConfig{
+				Endpoint: ":-1",
 			},
 		},
 	}
@@ -133,20 +124,16 @@ func TestNewServer_TLSConfigError(t *testing.T) {
 			KeyFile:  "invalid/path",
 		},
 	}
-	telset := telemetry.Settings{
-		Logger:       zap.NewNop(),
-		ReportStatus: telemetry.HCAdapter(healthcheck.New()),
-	}
+	telset := telemetry.NoopSettings()
+	telset.Logger = zap.NewNop()
 
 	_, err := NewServer(
 		context.Background(),
-		&Options{
-			ServerConfig: configgrpc.ServerConfig{
-				NetAddr: confignet.AddrConfig{
-					Endpoint: ":8081",
-				},
-				TLS: configoptional.Some(tlsCfg),
+		configgrpc.ServerConfig{
+			NetAddr: confignet.AddrConfig{
+				Endpoint: ":8081",
 			},
+			TLS: configoptional.Some(tlsCfg),
 		},
 		&fakeFactory{},
 		&fakeFactory{},
@@ -154,39 +141,6 @@ func TestNewServer_TLSConfigError(t *testing.T) {
 		telset,
 	)
 	assert.ErrorContains(t, err, "failed to load TLS config")
-}
-
-func TestCreateGRPCHandler(t *testing.T) {
-	reader := new(tracestoremocks.Reader)
-	writer := new(tracestoremocks.Writer)
-	depReader := new(depstoremocks.Reader)
-
-	h, err := createGRPCHandler(reader, writer, depReader)
-	require.NoError(t, err)
-
-	writer.On("WriteTraces", mock.Anything, mock.Anything).Return(errors.New("writer error"))
-	_, err = h.WriteSpan(context.Background(), &storage_v1.WriteSpanRequest{
-		Span: &model.Span{
-			TraceID: model.NewTraceID(1, 1),
-			SpanID:  model.NewSpanID(1),
-			Process: &model.Process{
-				ServiceName: "test",
-			},
-		},
-	})
-	require.ErrorContains(t, err, "writer error")
-
-	depReader.On(
-		"GetDependencies",
-		mock.Anything, // context
-		mock.Anything, // time
-		mock.Anything, // lookback
-	).Return(nil, errors.New("deps error"))
-	_, err = h.GetDependencies(context.Background(), &storage_v1.GetDependenciesRequest{})
-	require.ErrorContains(t, err, "deps error")
-
-	err = h.WriteSpanStream(nil)
-	assert.ErrorContains(t, err, "not implemented")
 }
 
 var testCases = []struct {
@@ -322,7 +276,7 @@ var testCases = []struct {
 }
 
 type grpcClient struct {
-	storage_v1.SpanReaderPluginClient
+	storage.TraceReaderClient
 
 	conn *grpc.ClientConn
 }
@@ -340,8 +294,8 @@ func newGRPCClient(t *testing.T, addr string, creds credentials.TransportCredent
 	require.NoError(t, err)
 
 	return &grpcClient{
-		SpanReaderPluginClient: storage_v1.NewSpanReaderPluginClient(conn),
-		conn:                   conn,
+		TraceReaderClient: storage.NewTraceReaderClient(conn),
+		conn:              conn,
 	}
 }
 
@@ -352,16 +306,12 @@ func TestServerGRPCTLS(t *testing.T) {
 			if test.TLS != nil {
 				tls = configoptional.Some(*test.TLS)
 			}
-			serverOptions := &Options{
-				ServerConfig: configgrpc.ServerConfig{
-					NetAddr: confignet.AddrConfig{
-						Endpoint: ":0",
-					},
-					TLS: tls,
+			serverOptions := configgrpc.ServerConfig{
+				NetAddr: confignet.AddrConfig{
+					Endpoint: ":0",
 				},
+				TLS: tls,
 			}
-			flagsSvc := flags.NewService(ports.QueryAdminHTTP)
-			flagsSvc.Logger = zap.NewNop()
 
 			reader := new(tracestoremocks.Reader)
 			f := &fakeFactory{
@@ -371,10 +321,8 @@ func TestServerGRPCTLS(t *testing.T) {
 			reader.On("GetServices", mock.AnythingOfType("*context.valueCtx")).Return(expectedServices, nil)
 
 			tm := tenancy.NewManager(&tenancy.Options{Enabled: true})
-			telset := telemetry.Settings{
-				Logger:       flagsSvc.Logger,
-				ReportStatus: telemetry.HCAdapter(flagsSvc.HC()),
-			}
+			telset := telemetry.NoopSettings()
+			telset.Logger = zap.NewNop()
 			server, err := NewServer(
 				context.Background(),
 				serverOptions,
@@ -402,7 +350,7 @@ func TestServerGRPCTLS(t *testing.T) {
 			defer cancel()
 
 			ctx = tenancy.WithTenant(ctx, "foo")
-			res, clientError := client.GetServices(ctx, &storage_v1.GetServicesRequest{})
+			res, clientError := client.GetServices(ctx, &storage.GetServicesRequest{})
 
 			if test.expectClientError {
 				require.Error(t, clientError)
@@ -412,24 +360,20 @@ func TestServerGRPCTLS(t *testing.T) {
 			}
 			require.NoError(t, client.conn.Close())
 			server.Close()
-			assert.Equal(t, healthcheck.Unavailable, flagsSvc.HC().Get())
 		})
 	}
 }
 
 func TestServerHandlesPortZero(t *testing.T) {
-	flagsSvc := flags.NewService(ports.QueryAdminHTTP)
 	zapCore, logs := observer.New(zap.InfoLevel)
-	flagsSvc.Logger = zap.New(zapCore)
-	telset := telemetry.Settings{
-		Logger:       flagsSvc.Logger,
-		ReportStatus: telemetry.HCAdapter(flagsSvc.HC()),
-	}
+	logger := zap.New(zapCore)
+	telset := telemetry.NoopSettings()
+	telset.Logger = logger
 	server, err := NewServer(
 		context.Background(),
-		&Options{ServerConfig: configgrpc.ServerConfig{
+		configgrpc.ServerConfig{
 			NetAddr: confignet.AddrConfig{Endpoint: ":0"},
-		}},
+		},
 		&fakeFactory{},
 		&fakeFactory{},
 		tenancy.NewManager(&tenancy.Options{}),
@@ -448,19 +392,18 @@ func TestServerHandlesPortZero(t *testing.T) {
 	validateGRPCServer(t, hostPort)
 
 	server.Close()
-
-	assert.Equal(t, healthcheck.Unavailable, flagsSvc.HC().Get())
 }
 
 func validateGRPCServer(t *testing.T, hostPort string) {
 	grpctest.ReflectionServiceValidator{
 		HostPort: hostPort,
 		ExpectedServices: []string{
-			"jaeger.storage.v1.SpanReaderPlugin",
-			"jaeger.storage.v1.SpanWriterPlugin",
-			"jaeger.storage.v1.DependenciesReaderPlugin",
-			"jaeger.storage.v1.PluginCapabilities",
-			"jaeger.storage.v1.StreamingSpanWriterPlugin",
+			// writer
+			"opentelemetry.proto.collector.trace.v1.TraceService",
+			// reader
+			"jaeger.storage.v2.TraceReader",
+			"jaeger.storage.v2.DependencyReader",
+			// health
 			"grpc.health.v1.Health",
 		},
 	}.Execute(t)

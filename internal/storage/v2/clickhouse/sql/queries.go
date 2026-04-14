@@ -18,15 +18,119 @@ INSERT INTO
         status_code,
         status_message,
         duration,
+        bool_attributes.key,
+        bool_attributes.value,
+        double_attributes.key,
+        double_attributes.value,
+        int_attributes.key,
+        int_attributes.value,
+        str_attributes.key,
+        str_attributes.value,
+        complex_attributes.key,
+        complex_attributes.value,
+        events.name,
+        events.timestamp,
+        events.bool_attributes,
+        events.double_attributes,
+        events.int_attributes,
+        events.str_attributes,
+        events.complex_attributes,
+        links.trace_id,
+        links.span_id,
+        links.trace_state,
+        links.bool_attributes,
+        links.double_attributes,
+        links.int_attributes,
+        links.str_attributes,
+        links.complex_attributes,
         service_name,
+        resource_bool_attributes.key,
+        resource_bool_attributes.value,
+        resource_double_attributes.key,
+        resource_double_attributes.value,
+        resource_int_attributes.key,
+        resource_int_attributes.value,
+        resource_str_attributes.key,
+        resource_str_attributes.value,
+        resource_complex_attributes.key,
+        resource_complex_attributes.value,
         scope_name,
-        scope_version
+        scope_version,
+        scope_bool_attributes.key,
+        scope_bool_attributes.value,
+        scope_double_attributes.key,
+        scope_double_attributes.value,
+        scope_int_attributes.key,
+        scope_int_attributes.value,
+        scope_str_attributes.key,
+        scope_str_attributes.value,
+        scope_complex_attributes.key,
+        scope_complex_attributes.value
     )
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+    )
 `
 
-const SelectSpansByTraceID = `
+const SelectSpansQuery = `
 SELECT
     id,
     trace_id,
@@ -63,20 +167,76 @@ SELECT
     links.trace_id,
     links.span_id,
     links.trace_state,
+    links.bool_attributes.key,
+    links.bool_attributes.value,
+    links.double_attributes.key,
+    links.double_attributes.value,
+    links.int_attributes.key,
+    links.int_attributes.value,
+    links.str_attributes.key,
+    links.str_attributes.value,
+    links.complex_attributes.key,
+    links.complex_attributes.value,
     service_name,
+    resource_bool_attributes.key,
+    resource_bool_attributes.value,
+    resource_double_attributes.key,
+    resource_double_attributes.value,
+    resource_int_attributes.key,
+    resource_int_attributes.value,
+    resource_str_attributes.key,
+    resource_str_attributes.value,
+    resource_complex_attributes.key,
+    resource_complex_attributes.value,
     scope_name,
-    scope_version
+    scope_version,
+    scope_bool_attributes.key,
+    scope_bool_attributes.value,
+    scope_double_attributes.key,
+    scope_double_attributes.value,
+    scope_int_attributes.key,
+    scope_int_attributes.value,
+    scope_str_attributes.key,
+    scope_str_attributes.value,
+    scope_complex_attributes.key,
+    scope_complex_attributes.value
 FROM
-    spans
-WHERE
-    trace_id = ?
+    spans s
 `
 
+const SelectSpansByTraceID = SelectSpansQuery + " WHERE s.trace_id = ?"
+
+// SearchTraceIDsBase is the inner SQL fragment for finding distinct trace IDs.
+//
+// The query begins with a no-op predicate (`WHERE 1=1`) so that additional
+// filters can be appended unconditionally using `AND` without needing to check
+// whether this is the first WHERE clause.
+const SearchTraceIDsBase = `SELECT DISTINCT
+    s.trace_id
+FROM spans s
+WHERE 1=1`
+
+// SearchTraceIDs wraps a trace ID subquery with a JOIN to
+// trace_id_timestamps to retrieve the start and end times for each trace.
+// The %s placeholder is replaced with the complete inner subquery
+// (SearchTraceIDsBase + conditions + LIMIT).
+const SearchTraceIDs = `
+SELECT
+    l.trace_id,
+    min(t.start) AS start,
+    max(t.end) AS end
+FROM (
+%s
+) l
+LEFT JOIN trace_id_timestamps t ON l.trace_id = t.trace_id
+GROUP BY l.trace_id`
+
 const SelectServices = `
-SELECT DISTINCT
+SELECT
     name
 FROM
     services
+GROUP BY name
 `
 
 const SelectOperationsAllKinds = `
@@ -87,6 +247,7 @@ FROM
     operations
 WHERE
     service_name = ?
+GROUP BY name, span_kind
 `
 
 const SelectOperationsByKind = `
@@ -98,7 +259,56 @@ FROM
 WHERE
     service_name = ?
     AND span_kind = ?
+GROUP BY name, span_kind
 `
 
-//go:embed create_schema.sql
-var CreateSchema string
+const SelectAttributeMetadata = `
+SELECT
+    attribute_key,
+    type,
+    level
+FROM
+    attribute_metadata`
+
+const TruncateSpans = `TRUNCATE TABLE spans`
+
+const TruncateServices = `TRUNCATE TABLE services`
+
+const TruncateOperations = `TRUNCATE TABLE operations`
+
+const TruncateTraceIDTimestamps = `TRUNCATE TABLE trace_id_timestamps`
+
+const TruncateAttributeMetadata = `TRUNCATE TABLE attribute_metadata`
+
+//go:embed create_spans_table.sql
+var CreateSpansTable string
+
+//go:embed create_services_table.sql
+var CreateServicesTable string
+
+//go:embed create_services_mv.sql
+var CreateServicesMaterializedView string
+
+//go:embed create_operations_table.sql
+var CreateOperationsTable string
+
+//go:embed create_operations_mv.sql
+var CreateOperationsMaterializedView string
+
+//go:embed create_trace_id_timestamps_table.sql
+var CreateTraceIDTimestampsTable string
+
+//go:embed create_trace_id_timestamps_mv.sql
+var CreateTraceIDTimestampsMaterializedView string
+
+//go:embed create_attribute_metadata_table.sql
+var CreateAttributeMetadataTable string
+
+//go:embed create_attribute_metadata_mv.sql
+var CreateAttributeMetadataMaterializedView string
+
+//go:embed create_event_attribute_metadata_mv.sql
+var CreateEventAttributeMetadataMaterializedView string
+
+//go:embed create_link_attribute_metadata_mv.sql
+var CreateLinkAttributeMetadataMaterializedView string

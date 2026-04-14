@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/extension/extensionauth"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -25,25 +26,20 @@ import (
 	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/config"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/samplingstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/mappings"
-	esSampleStore "github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/samplingstore"
-	esSpanStore "github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/spanstore"
-	esDepStorev2 "github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/depstore"
+	essamplestore "github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/samplingstore"
+	esspanstore "github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/spanstore"
+	esdepstorev2 "github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/depstore"
 )
 
 var _ io.Closer = (*FactoryBase)(nil)
 
-const (
-	primaryNamespace = "es"
-	archiveNamespace = "es-archive"
-)
-
-// FactoryBase implements storage.Factory for Elasticsearch backend.
+// FactoryBase for Elasticsearch backend.
 type FactoryBase struct {
 	metricsFactory metrics.Factory
 	logger         *zap.Logger
 	tracer         trace.TracerProvider
 
-	newClientFn func(ctx context.Context, c *config.Configuration, logger *zap.Logger, metricsFactory metrics.Factory) (es.Client, error)
+	newClientFn func(ctx context.Context, c *config.Configuration, logger *zap.Logger, metricsFactory metrics.Factory, httpAuth extensionauth.HTTPClient) (es.Client, error)
 
 	config *config.Configuration
 
@@ -61,6 +57,7 @@ func NewFactoryBase(
 	cfg config.Configuration,
 	metricsFactory metrics.Factory,
 	logger *zap.Logger,
+	httpAuth extensionauth.HTTPClient,
 ) (*FactoryBase, error) {
 	f := &FactoryBase{
 		config:      &cfg,
@@ -76,7 +73,7 @@ func NewFactoryBase(
 	}
 	f.tags = tags
 
-	client, err := f.newClientFn(ctx, f.config, logger, metricsFactory)
+	client, err := f.newClientFn(ctx, f.config, logger, metricsFactory, httpAuth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Elasticsearch client: %w", err)
 	}
@@ -108,8 +105,8 @@ func (f *FactoryBase) getClient() es.Client {
 }
 
 // GetSpanReaderParams returns the SpanReaderParams which can be used to initialize the v1 and v2 readers.
-func (f *FactoryBase) GetSpanReaderParams() esSpanStore.SpanReaderParams {
-	return esSpanStore.SpanReaderParams{
+func (f *FactoryBase) GetSpanReaderParams() esspanstore.SpanReaderParams {
+	return esspanstore.SpanReaderParams{
 		Client:              f.getClient,
 		MaxDocCount:         f.config.MaxDocCount,
 		MaxSpanAge:          f.config.MaxSpanAge,
@@ -120,14 +117,16 @@ func (f *FactoryBase) GetSpanReaderParams() esSpanStore.SpanReaderParams {
 		UseReadWriteAliases: f.config.UseReadWriteAliases,
 		ReadAliasSuffix:     f.config.ReadAliasSuffix,
 		RemoteReadClusters:  f.config.RemoteReadClusters,
+		SpanReadAlias:       f.config.SpanReadAlias,
+		ServiceReadAlias:    f.config.ServiceReadAlias,
 		Logger:              f.logger,
-		Tracer:              f.tracer.Tracer("esSpanStore.SpanReader"),
+		Tracer:              f.tracer.Tracer("esspanstore.SpanReader"),
 	}
 }
 
 // GetSpanWriterParams returns the SpanWriterParams which can be used to initialize the v1 and v2 writers.
-func (f *FactoryBase) GetSpanWriterParams() esSpanStore.SpanWriterParams {
-	return esSpanStore.SpanWriterParams{
+func (f *FactoryBase) GetSpanWriterParams() esspanstore.SpanWriterParams {
+	return esspanstore.SpanWriterParams{
 		Client:              f.getClient,
 		IndexPrefix:         f.config.Indices.IndexPrefix,
 		SpanIndex:           f.config.Indices.Spans,
@@ -137,15 +136,17 @@ func (f *FactoryBase) GetSpanWriterParams() esSpanStore.SpanWriterParams {
 		TagDotReplacement:   f.config.Tags.DotReplacement,
 		UseReadWriteAliases: f.config.UseReadWriteAliases,
 		WriteAliasSuffix:    f.config.WriteAliasSuffix,
+		SpanWriteAlias:      f.config.SpanWriteAlias,
+		ServiceWriteAlias:   f.config.ServiceWriteAlias,
 		Logger:              f.logger,
 		MetricsFactory:      f.metricsFactory,
 		ServiceCacheTTL:     f.config.ServiceCacheTTL,
 	}
 }
 
-// GetDependencyStoreParams returns the esDepStorev2.Params which can be used to initialize the v1 and v2 dependency stores.
-func (f *FactoryBase) GetDependencyStoreParams() esDepStorev2.Params {
-	return esDepStorev2.Params{
+// GetDependencyStoreParams returns the esdepstorev2.Params which can be used to initialize the v1 and v2 dependency stores.
+func (f *FactoryBase) GetDependencyStoreParams() esdepstorev2.Params {
+	return esdepstorev2.Params{
 		Client:              f.getClient,
 		Logger:              f.logger,
 		IndexPrefix:         f.config.Indices.IndexPrefix,
@@ -156,7 +157,7 @@ func (f *FactoryBase) GetDependencyStoreParams() esDepStorev2.Params {
 }
 
 func (f *FactoryBase) CreateSamplingStore(int /* maxBuckets */) (samplingstore.Store, error) {
-	params := esSampleStore.Params{
+	params := essamplestore.Params{
 		Client:                 f.getClient,
 		Logger:                 f.logger,
 		IndexPrefix:            f.config.Indices.IndexPrefix,
@@ -165,7 +166,7 @@ func (f *FactoryBase) CreateSamplingStore(int /* maxBuckets */) (samplingstore.S
 		Lookback:               f.config.AdaptiveSamplingLookback,
 		MaxDocCount:            f.config.MaxDocCount,
 	}
-	store := esSampleStore.NewSamplingStore(params)
+	store := essamplestore.NewSamplingStore(params)
 
 	if f.config.CreateIndexTemplates {
 		mappingBuilder := f.mappingBuilderFromConfig(f.config)
@@ -221,7 +222,7 @@ func (f *FactoryBase) onClientPasswordChange(cfg *config.Configuration, client *
 		PasswordFilePath: "", // avoid error that both are set
 	})
 
-	newClient, err := f.newClientFn(context.Background(), &newCfg, f.logger, mf)
+	newClient, err := f.newClientFn(context.Background(), &newCfg, f.logger, mf, nil)
 	if err != nil {
 		f.logger.Error("failed to recreate Elasticsearch client with new password", zap.Error(err))
 		return

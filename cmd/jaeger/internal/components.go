@@ -12,8 +12,10 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/sumologicexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sigv4authextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/probabilisticsamplerprocessor"
@@ -41,9 +43,11 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/nopreceiver"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
+	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/exporters/storageexporter"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/expvar"
+	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegermcp"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerstorage"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/remotesampling"
@@ -72,7 +76,9 @@ func defaultBuilders() builders {
 
 func (b builders) build() (otelcol.Factories, error) {
 	var err error
-	factories := otelcol.Factories{}
+	factories := otelcol.Factories{
+		Telemetry: WrapFactory(otelconftelemetry.NewFactory()),
+	}
 
 	factories.Extensions, err = b.extension(
 		// standard
@@ -81,6 +87,9 @@ func (b builders) build() (otelcol.Factories, error) {
 		zpagesextension.NewFactory(),
 
 		// add-ons
+		basicauthextension.NewFactory(),
+		sigv4authextension.NewFactory(),
+		jaegermcp.NewFactory(),
 		jaegerquery.NewFactory(),
 		jaegerstorage.NewFactory(),
 		remotesampling.NewFactory(),
@@ -101,6 +110,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		jaegerreceiver.NewFactory(),
 		kafkareceiver.NewFactory(),
 		zipkinreceiver.NewFactory(),
+
+		// openinsight add-ons
 		skywalkingreceiver.NewFactory(),
 		fluentforwardreceiver.NewFactory(),
 	)
@@ -118,6 +129,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		storageexporter.NewFactory(), // generic exporter to Jaeger v1 spanstore.SpanWriter
 		kafkaexporter.NewFactory(),
 		prometheusexporter.NewFactory(),
+
+		// openinsight add-ons
 		elasticsearchexporter.NewFactory(),
 		loadbalancingexporter.NewFactory(),
 		prometheusremotewriteexporter.NewFactory(),
@@ -136,6 +149,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		filterprocessor.NewFactory(),
 		// add-ons
 		adaptivesampling.NewFactory(),
+
+		// openinsight add-ons
 		transformprocessor.NewFactory(),
 		probabilisticsamplerprocessor.NewFactory(),
 	)
@@ -148,6 +163,8 @@ func (b builders) build() (otelcol.Factories, error) {
 		forwardconnector.NewFactory(),
 		// add-ons
 		spanmetricsconnector.NewFactory(),
+
+		// openinsight add-ons
 		servicegraphconnector.NewFactory(),
 	)
 	if err != nil {

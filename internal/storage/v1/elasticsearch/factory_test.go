@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/extension/extensionauth"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
@@ -32,7 +33,7 @@ import (
 	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
 	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/mocks"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/spanstore"
-	esDepStorev2 "github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/depstore"
+	esdepstorev2 "github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/depstore"
 	"github.com/jaegertracing/jaeger/internal/testutils"
 )
 
@@ -53,14 +54,14 @@ func TestElasticsearchFactoryBase(t *testing.T) {
 		Servers:  []string{server.URL},
 		LogLevel: "debug",
 	}
-	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t))
+	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t), nil)
 	require.NoError(t, err)
 	readerParams := f.GetSpanReaderParams()
 	assert.IsType(t, spanstore.SpanReaderParams{}, readerParams)
 	writerParams := f.GetSpanWriterParams()
 	assert.IsType(t, spanstore.SpanWriterParams{}, writerParams)
 	depParams := f.GetDependencyStoreParams()
-	assert.IsType(t, esDepStorev2.Params{}, depParams)
+	assert.IsType(t, esdepstorev2.Params{}, depParams)
 	_, err = f.CreateSamplingStore(1)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
@@ -132,7 +133,7 @@ func TestElasticsearchTagsFileDoNotExist(t *testing.T) {
 		},
 		LogLevel: "debug",
 	}
-	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t))
+	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t), nil)
 	require.ErrorContains(t, err, "open fixtures/file-does-not-exist.txt: no such file or directory")
 	assert.Nil(t, f)
 }
@@ -265,7 +266,7 @@ func TestCreateTemplates(t *testing.T) {
 	for _, test := range tests {
 		f := FactoryBase{}
 		mockClient := &mocks.Client{}
-		f.newClientFn = func(_ context.Context, _ *escfg.Configuration, _ *zap.Logger, _ metrics.Factory) (es.Client, error) {
+		f.newClientFn = func(_ context.Context, _ *escfg.Configuration, _ *zap.Logger, _ metrics.Factory, _ extensionauth.HTTPClient) (es.Client, error) {
 			return mockClient, nil
 		}
 		f.logger = zaptest.NewLogger(t)
@@ -274,17 +275,17 @@ func TestCreateTemplates(t *testing.T) {
 			IndexPrefix: test.indexPrefix,
 			Spans: escfg.IndexOptions{
 				Shards:   3,
-				Replicas: ptr(int64(1)),
+				Replicas: new(int64(1)),
 				Priority: 10,
 			},
 			Services: escfg.IndexOptions{
 				Shards:   3,
-				Replicas: ptr(int64(1)),
+				Replicas: new(int64(1)),
 				Priority: 10,
 			},
 		}}
 		f.tracer = otel.GetTracerProvider()
-		client, err := f.newClientFn(context.Background(), &escfg.Configuration{}, zaptest.NewLogger(t), metrics.NullFactory)
+		client, err := f.newClientFn(context.Background(), &escfg.Configuration{}, zaptest.NewLogger(t), metrics.NullFactory, nil)
 		require.NoError(t, err)
 		f.client.Store(&client)
 		f.templateBuilder = es.TextTemplateBuilder{}
@@ -310,19 +311,26 @@ func TestESStorageFactoryWithConfig(t *testing.T) {
 		Servers:  []string{server.URL},
 		LogLevel: "error",
 	}
-	factory, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop())
+	factory, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop(), nil)
 	require.NoError(t, err)
 	factory.Close()
 }
 
 func TestESStorageFactoryWithConfigError(t *testing.T) {
-	defer testutils.VerifyGoLeaksOnce(t)
-
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}))
+	defer server.Close()
 	cfg := escfg.Configuration{
-		Servers:  []string{"http://127.0.0.1:65535"},
-		LogLevel: "error",
+		Servers:            []string{server.URL},
+		DisableHealthCheck: true,
+		LogLevel:           "error",
 	}
-	_, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop())
+	_, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop(), nil)
 	require.ErrorContains(t, err, "failed to create Elasticsearch client")
 }
 
@@ -331,7 +339,7 @@ func TestPasswordFromFile(t *testing.T) {
 		testutils.VerifyGoLeaksOnce(t)
 	})
 	t.Run("primary client", func(t *testing.T) {
-		testPasswordFromFile(t)
+		runPasswordFromFileTest(t)
 	})
 
 	t.Run("load token error", func(t *testing.T) {
@@ -342,7 +350,7 @@ func TestPasswordFromFile(t *testing.T) {
 	})
 }
 
-func testPasswordFromFile(t *testing.T) {
+func runPasswordFromFileTest(t *testing.T) {
 	const (
 		pwd1 = "first password"
 		pwd2 = "second password"
@@ -381,10 +389,11 @@ func testPasswordFromFile(t *testing.T) {
 			}),
 		},
 		BulkProcessing: escfg.BulkProcessing{
-			MaxBytes: -1, // disable bulk; we want immediate flush
+			MaxBytes:   -1, // disable bulk
+			MaxActions: -1, // disable bulk; the test only validates auth headers
 		},
 	}
-	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop())
+	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zap.NewNop(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, f.Close())
@@ -456,10 +465,14 @@ func TestPasswordFromFileErrors(t *testing.T) {
 				PasswordFilePath: pwdFile,
 			}),
 		},
+		BulkProcessing: escfg.BulkProcessing{
+			MaxBytes:   -1, // disable bulk
+			MaxActions: -1, // disable bulk; the test only validates error paths
+		},
 	}
 
 	logger, buf := testutils.NewEchoLogger(t)
-	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, logger)
+	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, logger, nil)
 	require.NoError(t, err)
 	defer f.Close()
 
@@ -483,8 +496,56 @@ func TestFactoryBase_NewClient_WatcherError(t *testing.T) {
 		},
 	}
 
-	_, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t))
+	_, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to initialize basic authentication")
 	assert.Contains(t, err.Error(), "failed to get token from file")
+}
+
+func TestElasticsearchFactoryBaseWithAuthenticator(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(mockEsServerResponse)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := escfg.Configuration{
+		Servers:  []string{server.URL},
+		LogLevel: "debug",
+		BulkProcessing: escfg.BulkProcessing{
+			MaxBytes:   -1, // disable bulk
+			MaxActions: -1, // disable bulk; the test only validates authenticator setup
+		},
+	}
+
+	// Mock authenticator
+	mockAuth := &mockHTTPAuthenticator{}
+
+	f, err := NewFactoryBase(context.Background(), cfg, metrics.NullFactory, zaptest.NewLogger(t), mockAuth)
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	defer require.NoError(t, f.Close())
+
+	// Verify factory is properly initialized with authenticator
+	readerParams := f.GetSpanReaderParams()
+	assert.IsType(t, spanstore.SpanReaderParams{}, readerParams)
+}
+
+// mockHTTPAuthenticator implements extensionauth.HTTPClient for testing
+type mockHTTPAuthenticator struct{}
+
+func (*mockHTTPAuthenticator) RoundTripper(base http.RoundTripper) (http.RoundTripper, error) {
+	return &mockRoundTripper{base: base}, nil
+}
+
+// mockRoundTripper wraps the base RoundTripper
+type mockRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer mock-token")
+	if m.base != nil {
+		return m.base.RoundTrip(req)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 }
