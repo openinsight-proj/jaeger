@@ -8,8 +8,8 @@ package tracestore
 import (
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"os"
-	"strconv"
 	"testing"
 	"time"
 
@@ -19,55 +19,11 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/jaegertracing/jaeger-idl/model/v1"
-	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/dbmodel"
 	conventions "github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
 )
 
 var testSpanEventTime = time.Date(2020, 2, 11, 20, 26, 13, 123000, time.UTC)
-
-func TestCodeFromAttr(t *testing.T) {
-	tests := []struct {
-		name string
-		attr pcommon.Value
-		code int64
-		err  error
-	}{
-		{
-			name: "ok-string",
-			attr: pcommon.NewValueStr("0"),
-			code: 0,
-		},
-		{
-			name: "ok-int",
-			attr: pcommon.NewValueInt(1),
-			code: 1,
-		},
-		{
-			name: "wrong-type",
-			attr: pcommon.NewValueBool(true),
-			code: 0,
-			err:  errType,
-		},
-		{
-			name: "invalid-string",
-			attr: pcommon.NewValueStr("inf"),
-			code: 0,
-			err:  strconv.ErrSyntax,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			code, err := codeFromAttr(test.attr)
-			if test.err != nil {
-				require.ErrorIs(t, err, test.err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, test.code, code)
-		})
-	}
-}
 
 func TestZeroBatchLength(t *testing.T) {
 	trace, err := FromDBModel([]dbmodel.Span{})
@@ -79,88 +35,6 @@ func TestEmptySpansAndProcess(t *testing.T) {
 	trace, err := FromDBModel([]dbmodel.Span{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, trace.ResourceSpans().Len())
-}
-
-func TestGetStatusCodeFromHTTPStatusAttr(t *testing.T) {
-	tests := []struct {
-		name string
-		attr pcommon.Value
-		kind ptrace.SpanKind
-		code ptrace.StatusCode
-		err  string
-	}{
-		{
-			name: "string-unknown",
-			attr: pcommon.NewValueStr("10"),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeError,
-		},
-		{
-			name: "string-ok",
-			attr: pcommon.NewValueStr("101"),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeUnset,
-		},
-		{
-			name: "int-not-found",
-			attr: pcommon.NewValueInt(404),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeError,
-		},
-		{
-			name: "int-not-found-client-span",
-			attr: pcommon.NewValueInt(404),
-			kind: ptrace.SpanKindServer,
-			code: ptrace.StatusCodeUnset,
-		},
-		{
-			name: "int-invalid-arg",
-			attr: pcommon.NewValueInt(408),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeError,
-		},
-		{
-			name: "int-internal",
-			attr: pcommon.NewValueInt(500),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeError,
-		},
-		{
-			name: "wrong inputValue",
-			attr: pcommon.NewValueBool(true),
-			kind: ptrace.SpanKindClient,
-			code: ptrace.StatusCodeUnset,
-			err:  "invalid type: Bool",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			code, err := getStatusCodeFromHTTPStatusAttr(test.attr, test.kind)
-			if test.err != "" {
-				require.ErrorContains(t, err, test.err)
-			} else {
-				require.NoError(t, err)
-			}
-			assert.Equal(t, test.code, code)
-		})
-	}
-}
-
-func TestGetStatusCodeFromHTTPStatusAttr_DefaultSpanKind(t *testing.T) {
-	value := pcommon.NewValueInt(404)
-
-	statusCode, err := getStatusCodeFromHTTPStatusAttr(value, ptrace.SpanKindInternal)
-	require.NoError(t, err)
-	assert.Equal(t, ptrace.StatusCodeError, statusCode)
-
-	statusCode, err = getStatusCodeFromHTTPStatusAttr(value, ptrace.SpanKindProducer)
-	require.NoError(t, err)
-	assert.Equal(t, ptrace.StatusCodeError, statusCode)
-
-	statusCode, err = getStatusCodeFromHTTPStatusAttr(value, ptrace.SpanKindConsumer)
-	require.NoError(t, err)
-	assert.Equal(t, ptrace.StatusCodeError, statusCode)
 }
 
 func Test_SetSpanEventsFromDbSpanLogs(t *testing.T) {
@@ -427,6 +301,54 @@ func TestSetAttributesFromDbTags(t *testing.T) {
 	}
 }
 
+// TestDbTagsToAttributes_NonFiniteDoubles reads back the string tokens that
+// ToDBModel stores for NaN and the infinities. NaN never equals itself, so the
+// cases are checked with math.IsNaN instead of a map comparison.
+func TestDbTagsToAttributes_NonFiniteDoubles(t *testing.T) {
+	got := pcommon.NewMap()
+	dbTagsToAttributes([]dbmodel.KeyValue{
+		{Key: "nan", Type: dbmodel.Float64Type, Value: "NaN"},
+		{Key: "pos-inf", Type: dbmodel.Float64Type, Value: "Infinity"},
+		{Key: "neg-inf", Type: dbmodel.Float64Type, Value: "-Infinity"},
+		{Key: "word", Type: dbmodel.StringType, Value: "NaN"},
+	}, got)
+
+	nan, ok := got.Get("nan")
+	require.True(t, ok)
+	assert.True(t, math.IsNaN(nan.Double()))
+	posInf, ok := got.Get("pos-inf")
+	require.True(t, ok)
+	assert.True(t, math.IsInf(posInf.Double(), 1))
+	negInf, ok := got.Get("neg-inf")
+	require.True(t, ok)
+	assert.True(t, math.IsInf(negInf.Double(), -1))
+	word, ok := got.Get("word")
+	require.True(t, ok)
+	assert.Equal(t, pcommon.ValueTypeStr, word.Type())
+	assert.Equal(t, "NaN", word.Str())
+}
+
+// TestDbSpanToScope_IgnoresNonStringTags checks that a double attribute that happens to be
+// named like the scope metadata stays an attribute, even though a non-finite double is
+// stored as a string token.
+func TestDbSpanToScope_IgnoresNonStringTags(t *testing.T) {
+	span := &dbmodel.Span{Tags: []dbmodel.KeyValue{
+		{Key: conventions.AttributeOtelScopeName, Type: dbmodel.Float64Type, Value: "NaN"},
+		{Key: conventions.AttributeOtelScopeVersion, Type: dbmodel.StringType, Value: "1.0"},
+	}}
+	scopeSpans := ptrace.NewScopeSpans()
+	dbSpanToScope(span, scopeSpans)
+	assert.Empty(t, scopeSpans.Scope().Name())
+	assert.Empty(t, scopeSpans.Scope().Version())
+	assert.Len(t, span.Tags, 2)
+
+	span.Tags[0] = dbmodel.KeyValue{Key: conventions.AttributeOtelScopeName, Type: dbmodel.StringType, Value: "lib"}
+	dbSpanToScope(span, scopeSpans)
+	assert.Equal(t, "lib", scopeSpans.Scope().Name())
+	assert.Equal(t, "1.0", scopeSpans.Scope().Version())
+	assert.Empty(t, span.Tags)
+}
+
 func TestFromDBModelErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -463,7 +385,7 @@ func TestFromDBModelErrors(t *testing.T) {
 			dbSpans: []dbmodel.Span{{
 				TraceID:      dbmodel.TraceID("0123456789abcdef0123456789abcdef"),
 				SpanID:       dbmodel.SpanID("0123456789abcdef"),
-				ParentSpanID: dbmodel.SpanID("invalid-parent-id"),
+				ParentSpanID: dbmodel.SpanID("invalid-par"),
 			}},
 			err: "encoding/hex: invalid byte: U+0069 'i'",
 		},
@@ -673,15 +595,11 @@ func TestSetInternalSpanStatus(t *testing.T) {
 	errorStatusWithMessage := ptrace.NewStatus()
 	errorStatusWithMessage.SetCode(ptrace.StatusCodeError)
 	errorStatusWithMessage.SetMessage("Error: Invalid argument")
-	errorStatusWith404Message := ptrace.NewStatus()
-	errorStatusWith404Message.SetCode(ptrace.StatusCodeError)
-	errorStatusWith404Message.SetMessage("HTTP 404: Not Found")
-
 	tests := []struct {
 		name             string
 		attrs            map[string]any
 		status           ptrace.Status
-		kind             ptrace.SpanKind
+		expectedAttrs    map[string]any
 		attrsModifiedLen int // Length of attributes map after dropping converted fields
 	}{
 		{
@@ -702,49 +620,41 @@ func TestSetInternalSpanStatus(t *testing.T) {
 			attrsModifiedLen: 0,
 		},
 		{
-			name: "http.status_code tag is set as string",
+			name: "HTTP status code does not set span status",
 			attrs: map[string]any{
-				conventions.HTTPResponseStatusCodeKey: "404",
+				conventions.HTTPResponseStatusCodeKey: 500,
 			},
-			status:           errorStatus,
+			status: ptrace.NewStatus(),
+			expectedAttrs: map[string]any{
+				conventions.HTTPResponseStatusCodeKey: 500,
+			},
 			attrsModifiedLen: 1,
 		},
 		{
-			name: "http.status_code, http.status_message and error tags are set",
+			name: "HTTP status code and message remain attributes",
 			attrs: map[string]any{
 				conventions.HTTPResponseStatusCodeKey: 404,
-				tagHTTPStatusMsg:                      "HTTP 404: Not Found",
+				"http.status_message":                 "HTTP 404: Not Found",
 			},
-			status:           errorStatusWith404Message,
+			status: ptrace.NewStatus(),
+			expectedAttrs: map[string]any{
+				conventions.HTTPResponseStatusCodeKey: 404,
+				"http.status_message":                 "HTTP 404: Not Found",
+			},
 			attrsModifiedLen: 2,
 		},
 		{
-			name: "status.code has precedence over http.status_code.",
-			attrs: map[string]any{
-				conventions.OtelStatusCode:            statusOk,
-				conventions.HTTPResponseStatusCodeKey: 500,
-				tagHTTPStatusMsg:                      "Server Error",
-			},
-			status:           okStatus,
-			attrsModifiedLen: 2,
-		},
-		{
-			name: "status.error has precedence over http.status_error.",
+			name: "Explicit status is decoded while HTTP attributes remain",
 			attrs: map[string]any{
 				conventions.OtelStatusCode:            statusError,
 				conventions.HTTPResponseStatusCodeKey: 500,
-				tagHTTPStatusMsg:                      "Server Error",
+				"http.status_message":                 "Server Error",
 			},
-			status:           errorStatus,
-			attrsModifiedLen: 2,
-		},
-		{
-			name: "whether tagHttpStatusMsg is set as string",
-			attrs: map[string]any{
-				conventions.HTTPResponseStatusCodeKey: 404,
-				tagHTTPStatusMsg:                      "HTTP 404: Not Found",
+			status: errorStatus,
+			expectedAttrs: map[string]any{
+				conventions.HTTPResponseStatusCodeKey: 500,
+				"http.status_message":                 "Server Error",
 			},
-			status:           errorStatusWith404Message,
 			attrsModifiedLen: 2,
 		},
 		{
@@ -757,12 +667,15 @@ func TestSetInternalSpanStatus(t *testing.T) {
 			attrsModifiedLen: 0,
 		},
 		{
-			name: "error tag set and http tag message present",
+			name: "Error status does not source message from HTTP attribute",
 			attrs: map[string]any{
-				tagError:         true,
-				tagHTTPStatusMsg: "HTTP 404: Not Found",
+				tagError:              true,
+				"http.status_message": "HTTP 404: Not Found",
 			},
-			status:           errorStatusWith404Message,
+			status: errorStatus,
+			expectedAttrs: map[string]any{
+				"http.status_message": "HTTP 404: Not Found",
+			},
 			attrsModifiedLen: 1,
 		},
 	}
@@ -770,13 +683,24 @@ func TestSetInternalSpanStatus(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			span := ptrace.NewSpan()
-			span.SetKind(test.kind)
 			status := span.Status()
 			attrs := pcommon.NewMap()
 			require.NoError(t, attrs.FromRaw(test.attrs))
 			setSpanStatus(attrs, span)
 			assert.Equal(t, test.status, status)
 			assert.Equal(t, test.attrsModifiedLen, attrs.Len())
+			for key, expected := range test.expectedAttrs {
+				actual, ok := attrs.Get(key)
+				require.True(t, ok, "Expected attribute %s to exist", key)
+				switch expected := expected.(type) {
+				case int:
+					assert.Equal(t, int64(expected), actual.Int(), "Attribute %s value mismatch", key)
+				case string:
+					assert.Equal(t, expected, actual.Str(), "Attribute %s value mismatch", key)
+				default:
+					t.Fatalf("unsupported expected attribute type %T", expected)
+				}
+			}
 		})
 	}
 }

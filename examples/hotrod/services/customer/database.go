@@ -20,6 +20,9 @@ import (
 	"github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
 )
 
+// ErrCustomerNotFound is returned when a customer is not found.
+var ErrCustomerNotFound = errors.New("invalid customer ID")
+
 // database simulates Customer repository implemented on top of an SQL database
 type database struct {
 	tracer    trace.Tracer
@@ -66,9 +69,11 @@ func (d *database) Get(ctx context.Context, customerID int) (*Customer, error) {
 
 	ctx, span := d.tracer.Start(ctx, "SQL SELECT", trace.WithSpanKind(trace.SpanKindClient))
 	span.SetAttributes(
+		otelsemconv.DBSystemAttribute("mysql"),
+		otelsemconv.DBOperationNameAttribute("SELECT"),
 		otelsemconv.PeerServiceAttribute("mysql"),
 		attribute.
-			Key("sql.query").
+			Key(otelsemconv.DBQueryTextKey).
 			String(fmt.Sprintf("SELECT * FROM customer WHERE customer_id=%d", customerID)),
 	)
 	defer span.End()
@@ -85,5 +90,6 @@ func (d *database) Get(ctx context.Context, customerID int) (*Customer, error) {
 	if customer, ok := d.customers[customerID]; ok {
 		return customer, nil
 	}
-	return nil, errors.New("invalid customer ID")
+
+	return nil, ErrCustomerNotFound
 }

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 name: CI Orchestrator
 
 on:
@@ -11,9 +14,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Grant all permissions to allow child workflows to request what they need
-# Child workflows can downgrade permissions as needed (principle of least privilege)
-permissions: write-all
+permissions:
+  contents: read
 
 jobs:
   # ============================================================================
@@ -27,6 +29,10 @@ jobs:
     steps:
       - name: Determine execution mode
         id: mode
+        env:
+          # The org-membership and merged-PR checks below call the GitHub API
+          # through gh, which needs a token even for read-only queries.
+          GH_TOKEN: ${{ github.token }}
         run: |
           PARALLEL=false
 
@@ -58,15 +64,43 @@ jobs:
             if gh api --silent "orgs/jaegertracing/members/$PR_AUTHOR" 2>/dev/null; then
               echo "Parallel: org member ($PR_AUTHOR, verified via API)"
               PARALLEL=true
-            elif [[ "$AUTHOR_ASSOC" == "MEMBER" || "$AUTHOR_ASSOC" == "OWNER" ]]; then
-              echo "Parallel: org member ($PR_AUTHOR, author_association=$AUTHOR_ASSOC)"
+            elif [[ "$AUTHOR_ASSOC" == "MEMBER" || "$AUTHOR_ASSOC" == "OWNER" || "$AUTHOR_ASSOC" == "COLLABORATOR" ]]; then
+              echo "Parallel: trusted author ($PR_AUTHOR, author_association=$AUTHOR_ASSOC)"
               PARALLEL=true
             else
-              echo "Not an org member ($PR_AUTHOR, author_association=$AUTHOR_ASSOC)"
+              # The org membership API check can fail for private org members when using a
+              # restricted fork-PR token (the token is not an org member itself, so GitHub
+              # returns a 302 → redirect to public_members which yields 404 for private
+              # members).  author_association also misreports CONTRIBUTOR instead of MEMBER
+              # for org members without direct per-repo team access.
+              #
+              # Fallback: use the Search API (works with any read-only token) to count the
+              # author's merged PRs.  5+ merged PRs is a reliable trust signal that does not
+              # require org-scope permissions.
+              #
+              # Validate username before using it in a URL query (GitHub usernames are
+              # alphanumeric + hyphens, max 39 chars; reject anything that deviates).
+              MERGED_COUNT=0
+              if [[ "$PR_AUTHOR" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,37}[a-zA-Z0-9]$|^[a-zA-Z0-9]$ ]]; then
+                MERGED_COUNT=$(gh api \
+                  "search/issues?q=repo:jaegertracing/jaeger+is:pr+is:merged+author:$PR_AUTHOR&per_page=1" \
+                  --jq '.total_count' 2>/dev/null || echo "0")
+              else
+                echo "Skipping merged-PR check: unexpected username format ($PR_AUTHOR)"
+              fi
+              if [[ "${MERGED_COUNT:-0}" -ge 5 ]]; then
+                echo "Parallel: established contributor ($PR_AUTHOR, merged PRs=$MERGED_COUNT)"
+                PARALLEL=true
+              else
+                echo "Not a trusted author ($PR_AUTHOR, author_association=$AUTHOR_ASSOC, merged PRs=${MERGED_COUNT:-0})"
+              fi
             fi
 
-            # Parallel for known bots (dependency update automation)
-            if [[ "$PR_AUTHOR" == "dependabot[bot]" || "$PR_AUTHOR" == "renovate-bot" ]]; then
+            # Parallel for known bots (dependency update automation, Copilot agent, and
+            # the ysh-bot maintainer automation account that authors agent-generated PRs).
+            # "Copilot" is the user.login for the copilot-swe-agent[bot] GitHub App; GitHub
+            # Search API returns 422 for that login so the merged-PR fallback cannot detect it.
+            if [[ "$PR_AUTHOR" == "dependabot[bot]" || "$PR_AUTHOR" == "renovate-bot" || "$PR_AUTHOR" == "Copilot" || "$PR_AUTHOR" == "ysh-bot" ]]; then
               echo "Parallel: bot PR author ($PR_AUTHOR)"
               PARALLEL=true
             else
@@ -98,8 +132,8 @@ jobs:
     name: CI Scripts Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -140,18 +174,30 @@ jobs:
   stage1-seq:
     needs: [setup]
     if: ${{ needs.setup.outputs.parallel == 'false' }}
+    permissions:
+      contents: read
+      # binary-size-check reads the PR's labels to see whether its size gate is waived.
+      pull-requests: read
     uses: ./.github/workflows/ci-orchestrator-stage1.yml
     secrets: inherit
 
   stage2-seq:
     needs: [setup, stage1-seq]
     if: ${{ needs.setup.outputs.parallel == 'false' }}
+    permissions:
+      contents: read
     uses: ./.github/workflows/ci-orchestrator-stage2.yml
     secrets: inherit
 
   stage3-seq:
     needs: [setup, stage2-seq]
     if: ${{ needs.setup.outputs.parallel == 'false' }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      # Ceiling for CodeQL SARIF upload in the called stage3 workflow.
+      security-events: write
     uses: ./.github/workflows/ci-orchestrator-stage3.yml
     secrets: inherit
 
@@ -163,29 +209,48 @@ jobs:
   stage1-fast:
     needs: [setup]
     if: ${{ needs.setup.outputs.parallel == 'true' }}
+    permissions:
+      contents: read
+      # binary-size-check reads the PR's labels to see whether its size gate is waived.
+      pull-requests: read
     uses: ./.github/workflows/ci-orchestrator-stage1.yml
     secrets: inherit
 
   stage2-fast:
     needs: [setup]
     if: ${{ needs.setup.outputs.parallel == 'true' }}
+    permissions:
+      contents: read
     uses: ./.github/workflows/ci-orchestrator-stage2.yml
     secrets: inherit
 
   stage3-fast:
     needs: [setup]
     if: ${{ needs.setup.outputs.parallel == 'true' }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      # Ceiling for CodeQL SARIF upload in the called stage3 workflow.
+      security-events: write
     uses: ./.github/workflows/ci-orchestrator-stage3.yml
     secrets: inherit
 
   # ============================================================================
   # FINAL GATEKEEPER: Use this job for Branch Protection.
   # Validates whichever execution path was taken (sequential or parallel).
+  #
+  # It runs when a stage fails, which is the point of always(), but not when the run itself was
+  # cancelled: a cancelled run is one a newer run superseded, and every job it reports on was
+  # cancelled with it, so a verdict from it says nothing about the commit. Reporting failure there
+  # writes a red "All CI Checks Passed" onto a commit whose live run passed, and branch protection
+  # reads the red one. Skipping instead leaves the surviving run's verdict as the only one, and a
+  # skipped job counts as a pass.
   # ============================================================================
   ci-success:
     name: All CI Checks Passed
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && !cancelled()
     needs: [setup, ci-scripts, stage1-seq, stage2-seq, stage3-seq, stage1-fast, stage2-fast, stage3-fast]
     steps:
       - name: Check setup status
@@ -243,5 +308,9 @@ jobs:
     name: CI Summary Report
     needs: [ci-success]
     if: always() && needs.ci-success.result == 'success'
+    permissions:
+      # Ceiling for actions/cache save in the called summary workflow.
+      actions: write
+      contents: read
     uses: ./.github/workflows/ci-summary-report.yml
     secrets: inherit

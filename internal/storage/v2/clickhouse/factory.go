@@ -4,29 +4,112 @@
 package clickhouse
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"text/template"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"github.com/jaegertracing/jaeger/internal/storage/v1"
+	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore"
+	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore/metricstoremetrics"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/depstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
 	chdepstore "github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/depstore"
+	chmetricstore "github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/metricstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/sql"
 	chtracestore "github.com/jaegertracing/jaeger/internal/storage/v2/clickhouse/tracestore"
 	"github.com/jaegertracing/jaeger/internal/telemetry"
 )
 
 var (
-	_ io.Closer          = (*Factory)(nil)
-	_ depstore.Factory   = (*Factory)(nil)
-	_ tracestore.Factory = (*Factory)(nil)
-	_ storage.Purger     = (*Factory)(nil)
+	_ io.Closer                  = (*Factory)(nil)
+	_ depstore.Factory           = (*Factory)(nil)
+	_ tracestore.Factory         = (*Factory)(nil)
+	_ storage.MetricStoreFactory = (*Factory)(nil)
+	_ storage.Purger             = (*Factory)(nil)
 )
+
+// schemaTemplateParams is what the CREATE TABLE templates under sql/ are rendered with.
+type schemaTemplateParams struct {
+	// TTLSeconds is the retention of spans and trace_id_timestamps; zero renders no TTL clause.
+	TTLSeconds int64
+	// MergeTree is the ENGINE clause body of the tables that hold raw rows.
+	MergeTree string
+	// AggregatingMergeTree is the ENGINE clause body of the derived tables, whose rows
+	// collapse on their sort key.
+	AggregatingMergeTree string
+}
+
+type schemaStatement struct {
+	name  string
+	query string
+}
+
+type schemaBuilder struct {
+	statements []schemaStatement
+}
+
+func newSchemaBuilder(cfg Configuration) (*schemaBuilder, error) {
+	mergeTree, err := cfg.TableEngine.engineClause(mergeTreeFamily)
+	if err != nil {
+		return nil, err
+	}
+	aggregatingMergeTree, err := cfg.TableEngine.engineClause(aggregatingMergeTreeFamily)
+	if err != nil {
+		return nil, err
+	}
+	params := schemaTemplateParams{
+		TTLSeconds:           int64(cfg.TTL / time.Second),
+		MergeTree:            mergeTree,
+		AggregatingMergeTree: aggregatingMergeTree,
+	}
+	// The materialized views carry no engine of their own, because each writes TO its
+	// target table, so only the tables are templates.
+	schema := []struct {
+		name     string
+		query    string
+		template bool
+	}{
+		{"spans table", sql.CreateSpansTable, true},
+		{"services table", sql.CreateServicesTable, true},
+		{"services materialized view", sql.CreateServicesMaterializedView, false},
+		{"operations table", sql.CreateOperationsTable, true},
+		{"operations materialized view", sql.CreateOperationsMaterializedView, false},
+		{"trace id timestamps table", sql.CreateTraceIDTimestampsTable, true},
+		{"trace id timestamps materialized view", sql.CreateTraceIDTimestampsMaterializedView, false},
+		{"attribute metadata table", sql.CreateAttributeMetadataTable, true},
+		{"attribute metadata materialized view", sql.CreateAttributeMetadataMaterializedView, false},
+		{"event attribute metadata materialized view", sql.CreateEventAttributeMetadataMaterializedView, false},
+		{"link attribute metadata materialized view", sql.CreateLinkAttributeMetadataMaterializedView, false},
+		{"dependencies table", sql.CreateDependenciesTable, true},
+	}
+	builder := &schemaBuilder{}
+	for _, s := range schema {
+		query := s.query
+		if s.template {
+			query, err = loadTemplate(s.name, s.query, params)
+			if err != nil {
+				return nil, err
+			}
+		}
+		builder.statements = append(builder.statements, schemaStatement{name: s.name, query: query})
+	}
+	return builder, nil
+}
+
+func (b *schemaBuilder) build(ctx context.Context, conn driver.Conn) error {
+	for _, statement := range b.statements {
+		if err := conn.Exec(ctx, statement.query); err != nil {
+			return fmt.Errorf("failed to create %s: %w", statement.name, err)
+		}
+	}
+	return nil
+}
 
 type Factory struct {
 	config Configuration
@@ -35,7 +118,15 @@ type Factory struct {
 }
 
 func NewFactory(ctx context.Context, cfg Configuration, telset telemetry.Settings) (*Factory, error) {
-	cfg.applyDefaults()
+	var builder *schemaBuilder
+	if cfg.CreateSchema {
+		var err error
+		builder, err = newSchemaBuilder(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	f := &Factory{
 		config: cfg,
 		telset: telset,
@@ -53,49 +144,46 @@ func NewFactory(ctx context.Context, cfg Configuration, telset telemetry.Setting
 		opts.Auth.Username = basicAuth.Username
 		opts.Auth.Password = string(basicAuth.Password)
 	}
+	if tlsCfg := f.config.TLS.Get(); tlsCfg != nil {
+		loaded, tlsErr := tlsCfg.LoadTLSConfig(ctx)
+		if tlsErr != nil {
+			return nil, fmt.Errorf("failed to load TLS configuration: %w", tlsErr)
+		}
+		opts.TLS = loaded
+	}
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse connection: %w", err)
 	}
-	err = conn.Ping(ctx)
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("failed to ping ClickHouse: %w", err),
-			conn.Close(),
-		)
-	}
-	if f.config.CreateSchema {
-		schemas := []struct {
-			name  string
-			query string
-		}{
-			{"spans table", sql.CreateSpansTable},
-			{"services table", sql.CreateServicesTable},
-			{"services materialized view", sql.CreateServicesMaterializedView},
-			{"operations table", sql.CreateOperationsTable},
-			{"operations materialized view", sql.CreateOperationsMaterializedView},
-			{"trace id timestamps table", sql.CreateTraceIDTimestampsTable},
-			{"trace id timestamps materialized view", sql.CreateTraceIDTimestampsMaterializedView},
-			{"attribute metadata table", sql.CreateAttributeMetadataTable},
-			{"attribute metadata materialized view", sql.CreateAttributeMetadataMaterializedView},
-			{"event attribute metadata materialized view", sql.CreateEventAttributeMetadataMaterializedView},
-			{"link attribute metadata materialized view", sql.CreateLinkAttributeMetadataMaterializedView},
-		}
 
-		for _, schema := range schemas {
-			if err = conn.Exec(ctx, schema.query); err != nil {
-				return nil, errors.Join(fmt.Errorf("failed to create %s: %w", schema.name, err), conn.Close())
-			}
+	success := false
+	defer func() {
+		if !success {
+			_ = conn.Close()
+		}
+	}()
+
+	if err = conn.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("failed to ping ClickHouse: %w", err)
+	}
+
+	if builder != nil {
+		if err := builder.build(ctx, conn); err != nil {
+			return nil, err
 		}
 	}
+
+	success = true
 	f.conn = conn
 	return f, nil
 }
 
 func (f *Factory) CreateTraceReader() (tracestore.Reader, error) {
 	return chtracestore.NewReader(f.conn, chtracestore.ReaderConfig{
-		DefaultSearchDepth: f.config.DefaultSearchDepth,
-		MaxSearchDepth:     f.config.MaxSearchDepth,
+		DefaultSearchDepth:            f.config.DefaultSearchDepth,
+		MaxSearchDepth:                f.config.MaxSearchDepth,
+		AttributeMetadataCacheTTL:     f.config.AttributeMetadataCacheTTL,
+		AttributeMetadataCacheMaxSize: f.config.AttributeMetadataCacheMaxSize,
 	}), nil
 }
 
@@ -103,8 +191,19 @@ func (f *Factory) CreateTraceWriter() (tracestore.Writer, error) {
 	return chtracestore.NewWriter(f.conn), nil
 }
 
-func (*Factory) CreateDependencyReader() (depstore.Reader, error) {
-	return chdepstore.NewDependencyReader(), nil
+func (f *Factory) CreateDependencyReader() (depstore.Reader, error) {
+	return chdepstore.NewDependencyReader(f.conn), nil
+}
+
+func (f *Factory) CreateDependencyWriter() (depstore.Writer, error) {
+	return chdepstore.NewDependencyWriter(f.conn), nil
+}
+
+func (f *Factory) CreateMetricsReader() (metricstore.Reader, error) {
+	return metricstoremetrics.NewReaderDecorator(
+		chmetricstore.NewReader(f.conn),
+		f.telset.Metrics,
+	), nil
 }
 
 func (f *Factory) Close() error {
@@ -121,6 +220,7 @@ func (f *Factory) Purge(ctx context.Context) error {
 		{"operations", sql.TruncateOperations},
 		{"trace_id_timestamps", sql.TruncateTraceIDTimestamps},
 		{"attribute_metadata", sql.TruncateAttributeMetadata},
+		{"dependencies", sql.TruncateDependencies},
 	}
 
 	for _, table := range tables {
@@ -136,4 +236,19 @@ func getProtocol(protocol string) clickhouse.Protocol {
 		return clickhouse.HTTP
 	}
 	return clickhouse.Native
+}
+
+// loadTemplate is defined as a variable to allow overriding it in tests.
+var loadTemplate func(name, tmplBody string, data any) (string, error) = loadTemplateImpl
+
+func loadTemplateImpl(name, tmplBody string, data any) (string, error) {
+	tmpl, err := template.New(name).Parse(tmplBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse %s template: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute %s template: %w", name, err)
+	}
+	return buf.String(), nil
 }

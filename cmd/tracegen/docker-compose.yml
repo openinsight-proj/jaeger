@@ -1,12 +1,15 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 services:
     jaeger:
-      image: cr.jaegertracing.io/jaegertracing/jaeger:2.16.0@sha256:bf7f805da4c2bc8d58a6c81ee650fdb6b8e4287698f95fbe231c09c865bc397f
+      image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
       ports:
         - '16686:16686'
         - '4318:4318'
 
     tracegen:
-      image: cr.jaegertracing.io/jaegertracing/jaeger-tracegen:2.16.0@sha256:b0e4632d6b26bae69fe4bbe62cbf1438816ca271343d383c4f214c553d112b3d
+      image: cr.jaegertracing.io/jaegertracing/jaeger-tracegen:2.20.0@sha256:be38b7a33c51ff4835708319abbdb284e1ff34e5fde2d047fc453e7c01d0708b
       environment:
         - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       command: ["-duration", "10s", "-workers", "3", "-pause", "250ms"]

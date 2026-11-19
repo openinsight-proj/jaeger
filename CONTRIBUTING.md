@@ -4,6 +4,8 @@ We'd love your help!
 
 General contributing guidelines are described in [Contributing Guidelines](./CONTRIBUTING_GUIDELINES.md).
 
+If you use AI tools to help you contribute, read the [AI Usage Policy](./AI_POLICY.md) as well.
+
 Jaeger is [Apache 2.0 licensed](LICENSE) and accepts contributions via GitHub
 pull requests. This document outlines some of the conventions on development
 workflow, commit message formatting, contact points and other resources to make
@@ -44,6 +46,15 @@ make install-tools
 make test
 ```
 
+If you are regenerating protobuf code via `make proto`, you will also need to have Docker installed and running as well
+as `uv` for the Python SDK stubs (see [`sdk/python/README.md`](sdk/python/README.md)).
+
+To install `uv` on macOS, run:
+
+```
+brew install uv
+```
+
 ### Contributing Code
 
 We accept new changes as pull requests on GitHub. Please make sure the following conditions are met before submitting PRs:
@@ -77,7 +88,7 @@ $ go run ./cmd/jaeger --config ./cmd/jaeger/config.yaml
 
 #### What does this command do?
 
-The Jaeger binary runs with the default configuration file (config.yaml) that includes 
+The Jaeger binary runs with the default configuration file (config.yaml) that includes
 the UI configuration via the `jaeger_query` extension. The `jaeger-ui` submodule, which was added from the Pre-requisites step above, contains the source code for the UI assets (requires Node.js 24+). The assets must be compiled first with `make build-ui`, which normally downloads them from the latest UI release, but can also build them from source.
 
 ## Project Structure
@@ -170,11 +181,42 @@ $ cat ./pkg/cassandra/config/.nocover
 requires connection to Cassandra
 ```
 
+## Code review requirements
+
+Jaeger changes are reviewed through GitHub pull requests. Reviewers are expected to evaluate whether a change is appropriate for the project, whether the implementation is correct and maintainable, and whether it is covered by suitable tests and documentation.
+
+Before approving a pull request, reviewers should check that:
+
+* the change is understandable, scoped to the stated problem, and consistent with the project's architecture and coding style,
+* new behavior has tests, bug fixes include regression coverage where feasible, and required CI checks are passing,
+* security-sensitive changes, dependency changes, authentication or authorization changes, network-facing behavior, release tooling, and configuration defaults receive extra scrutiny from maintainers familiar with the affected area,
+* generated files are not edited manually; contributors must update the source definitions and regenerate files with the documented targets,
+* the pull request title and commit history are suitable for the project's squash-merge workflow.
+
+Non-trivial pull requests should be reviewed and approved by a maintainer or knowledgeable contributor other than the author before merge. Trivial documentation, typo, formatting, or mechanical follow-up changes may be merged by a maintainer without a separate approval when the risk is low and CI is passing.
+
 ## Merging PRs
 **For maintainers:** before merging a PR make sure the title is descriptive and follows [a good commit message](./CONTRIBUTING_GUIDELINES.md)
 
 Merge the PR by using "Squash and merge" option on Github. Avoid creating merge commits.
 After the merge make sure referenced issues were closed.
+
+## Upgrading the Go Version
+
+Jaeger builds with the latest Go minor release. The version is declared in the top-level `go.mod` and mirrored into the other `go.mod` files, `.golangci.yml`, and the shared `.github/actions/setup-go` action. That action is the only way CI installs Go, and it hardcodes the version rather than taking one from its callers, so no workflow names a Go version. `scripts/lint/check-go-version.sh` runs as part of `make lint` and fails the build when any of those copies disagrees with the top-level `go.mod`. No Dockerfile here names a `golang` image, because nothing in this repository compiles Go inside a container; the one Go-bearing image is the pre-built debug base image described in step 4.
+
+To upgrade:
+
+1. Change the top-level `go.mod` by hand, e.g. `go mod edit -go=1.27.0`. The script takes its target version from that file, so nothing else can be updated until this is done.
+2. Run `./scripts/lint/check-go-version.sh -u` to propagate the version everywhere else. Pass `-v` as well to print a diff of each file it rewrites.
+3. Run `make fmt`, `make lint`, and `make test`, and fix whatever the new compiler and the new linter complain about.
+4. Upgrade Delve for the new Go version, following [Upgrading for a New Go Release](https://github.com/jaegertracing/base-image-with-debugger#upgrading-for-a-new-go-release). `dlv` refuses to attach to a binary built by a newer Go than it knows about, and the all-in-one integration test runs the debug image, so a Go bump without this step fails CI rather than merely degrading the debug image. Once that image is published, either repoint `scripts/build/docker/debug/Dockerfile` at it or leave it to Renovate, which manages that pin and gets the digest right without being told it. Renovate opens pull requests on a monthly schedule, but the update appears on the [dependency dashboard](https://github.com/jaegertracing/jaeger/issues/5586) ahead of that, and ticking its checkbox there creates the pull request straight away.
+
+[#9478](https://github.com/jaegertracing/jaeger/pull/9478), the upgrade to Go 1.27, is a worked example of the whole sequence.
+
+The `-u` mode only rewrites the minor version. A line that pins a patch version has to be updated manually; the script reports such a line and exits.
+
+The `idl` submodule has its own `go.mod` and is deliberately excluded; its Go version is upgraded through a PR to the [jaeger-idl](https://github.com/jaegertracing/jaeger-idl) repository.
 
 ## Deprecating CLI Flags
 
@@ -215,5 +257,13 @@ As much as possible, use OTel Collector's [feature gates][feature_gates] to mana
   * Two releases later remove the feature gate as unused. Call out a breaking change in the changelog.
 
 See https://github.com/jaegertracing/jaeger/pull/6441 for an example of this workflow.
+
+Conventions for Jaeger feature gates:
+  * **Naming.** Every new gate ID MUST use the `jaeger.` prefix (e.g. `jaeger.es.config.rejectLegacyRotationFlags`). Jaeger shares the process-wide OTel `featuregate.GlobalRegistry()` with the embedded Collector and its contrib components, and the prefix avoids ID collisions with their gates. A legacy ID that predates this convention (e.g. `storage.clickhouse`) may stay registered without the prefix for the duration of its deprecation/removal window, but it must not be the canonical ID for new work: introduce the `jaeger.`-prefixed name and treat the old one as a deprecated alias per the renaming cycle below.
+  * **`FromVersion` records introduction, not stage.** Set `WithRegisterFromVersion` to the release in which the gate ID is first added, and do not change it when the gate graduates between stages — it is not a "current stage since" marker.
+  * **`ToVersion` is the removal release.** It is required once a gate is Stable or Deprecated (registration panics otherwise) and names the release in which the gate ID is removed. A Stable gate can no longer be disabled; explicitly enabling one logs that it will be removed in `ToVersion`.
+  * **Renaming a gate is itself a breaking change.** A gate ID is user-facing config (`--feature-gates=<id>`) and the OTel API has no built-in ID alias, so a rename needs a deprecation cycle: register the new ID and keep the old one working as a deprecated alias via `internal/featuregate.RenamedGate` for a window, then remove the old ID in a later release. `RenamedGate` supports only Alpha and Beta, so a renamed gate must have its legacy alias removed before it can be promoted to Stable.
+
+The current inventory of registered gates and their recommended transitions is tracked in https://github.com/jaegertracing/jaeger/issues/9057.
 
 [feature_gates]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/featuregate/README.md

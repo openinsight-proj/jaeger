@@ -10,16 +10,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/jaegertracing/jaeger-idl/model/v1"
-	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/dbmodel"
 	conventions "github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
 )
 
@@ -253,7 +255,7 @@ func TestLinksToDbSpanRefs(t *testing.T) {
 			tt.setupLinks(span.Links())
 
 			scopeSpans := ptrace.NewScopeSpans()
-			modelSpan := spanToDbSpan(span, scopeSpans.Scope(), dbmodel.Process{})
+			modelSpan := spanToDbSpan(span, scopeSpans.Scope(), dbmodel.Process{}, false)
 
 			assert.Len(t, modelSpan.References, tt.expectedRefs, tt.description)
 			if tt.expectedRefs > 0 {
@@ -393,6 +395,21 @@ func TestAttributeConversion(t *testing.T) {
 					Type:  dbmodel.StringType,
 					Value: "service-name",
 				},
+			},
+		},
+		{
+			name: "non-finite double attributes",
+			setupAttr: func() pcommon.Map {
+				attributes := pcommon.NewMap()
+				attributes.PutDouble("nan", math.NaN())
+				attributes.PutDouble("pos-inf", math.Inf(1))
+				attributes.PutDouble("neg-inf", math.Inf(-1))
+				return attributes
+			},
+			expected: []dbmodel.KeyValue{
+				{Key: "nan", Type: dbmodel.Float64Type, Value: "NaN"},
+				{Key: "pos-inf", Type: dbmodel.Float64Type, Value: "Infinity"},
+				{Key: "neg-inf", Type: dbmodel.Float64Type, Value: "-Infinity"},
 			},
 		},
 		{
@@ -613,7 +630,7 @@ func TestEdgeCases(t *testing.T) {
 			testFunc: func(traces ptrace.Traces) any {
 				spans := traces.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0)
 				spanScope := traces.ResourceSpans().At(0).ScopeSpans().At(0).Scope()
-				modelSpan := spanToDbSpan(spans, spanScope, dbmodel.Process{})
+				modelSpan := spanToDbSpan(spans, spanScope, dbmodel.Process{}, false)
 				return len(modelSpan.Tags) == 0
 			},
 			description: "Empty span attributes should result in no tags",
@@ -628,7 +645,7 @@ func TestEdgeCases(t *testing.T) {
 			expected: true,
 			testFunc: func(traces ptrace.Traces) any {
 				resourceSpans := traces.ResourceSpans().At(0)
-				dbSpans := resourceSpansToDbSpans(resourceSpans)
+				dbSpans := resourceSpansToDbSpans(resourceSpans, false)
 				return len(dbSpans) == 0
 			},
 			description: "Resource spans with no scope spans should return empty slice",
@@ -720,6 +737,45 @@ func TestToDbModel_Fixtures(t *testing.T) {
 	spans := ToDBModel(td)
 	assert.Len(t, spans, 1)
 	testSpans(t, spansStr, spans[0])
+}
+
+func TestSpanToDbSpan_OmitParentSpanIDReference(t *testing.T) {
+	const parentHex = dbmodel.SpanID("0102030405060708")
+	newTraceWithParentAndLink := func() ptrace.Traces {
+		td := ptrace.NewTraces()
+		span := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetParentSpanID(pcommon.SpanID([8]byte{1, 2, 3, 4, 5, 6, 7, 8}))
+		link := span.Links().AppendEmpty()
+		link.SetTraceID(pcommon.TraceID([16]byte{9}))
+		link.SetSpanID(pcommon.SpanID([8]byte{9}))
+		return td
+	}
+
+	t.Run("gate disabled writes parent as CHILD_OF reference plus the link", func(t *testing.T) {
+		setOmitParentSpanIDReferenceGate(t, false)
+		dbSpan := ToDBModel(newTraceWithParentAndLink())[0]
+		require.Len(t, dbSpan.References, 2)
+		assert.Equal(t, dbmodel.ChildOf, dbSpan.References[0].RefType)
+		assert.Equal(t, parentHex, dbSpan.References[0].SpanID)
+	})
+
+	t.Run("gate enabled drops the synthetic parent reference but keeps real links", func(t *testing.T) {
+		setOmitParentSpanIDReferenceGate(t, true)
+		dbSpan := ToDBModel(newTraceWithParentAndLink())[0]
+		require.Len(t, dbSpan.References, 1)
+		assert.NotEqual(t, parentHex, dbSpan.References[0].SpanID, "remaining reference should be the genuine link, not the parent")
+		assert.Equal(t, parentHex, dbSpan.ParentSpanID, "parent span ID is still written to its own field")
+	})
+}
+
+// setOmitParentSpanIDReferenceGate sets the gate for the duration of the test and
+// restores its original value on cleanup.
+func setOmitParentSpanIDReferenceGate(t *testing.T, enabled bool) {
+	original := omitParentSpanIDReferenceGate.IsEnabled()
+	require.NoError(t, featuregate.GlobalRegistry().Set(omitParentSpanIDReferenceGate.ID(), enabled))
+	t.Cleanup(func() {
+		require.NoError(t, featuregate.GlobalRegistry().Set(omitParentSpanIDReferenceGate.ID(), original))
+	})
 }
 
 func BenchmarkInternalTracesToDbSpans(b *testing.B) {

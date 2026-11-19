@@ -20,7 +20,21 @@ var _ tracestore.Reader = (*TraceReader)(nil)
 
 // TraceReader adapts a v1 spanstore.Reader to the v2 tracestore.Reader interface.
 type TraceReader struct {
+	// v1 storage backends do not compute trace summaries natively; fall back to
+	// FindTraces + client-side aggregation.
+	tracestore.UnsupportedTraceSummaries
+	// v1 spanstore.Reader has no span-search method to adapt; unsupported
+	tracestore.UnsupportedSpanSearch
+
 	spanReader spanstore.Reader
+}
+
+func (*TraceReader) SearchCapabilities(context.Context) (tracestore.SearchCapabilities, error) {
+	return tracestore.SearchCapabilities{
+		// The v1 readers reject a query with no service name: Cassandra and Badger both
+		// index by it.
+		WithoutServiceName: false,
+	}, nil
 }
 
 func NewTraceReader(spanReader spanstore.Reader) *TraceReader {
@@ -65,21 +79,7 @@ func (tr *TraceReader) GetOperations(
 	ctx context.Context,
 	query tracestore.OperationQueryParams,
 ) ([]tracestore.Operation, error) {
-	o, err := tr.spanReader.GetOperations(ctx, spanstore.OperationQueryParameters{
-		ServiceName: query.ServiceName,
-		SpanKind:    query.SpanKind,
-	})
-	if err != nil || o == nil {
-		return nil, err
-	}
-	operations := []tracestore.Operation{}
-	for _, operation := range o {
-		operations = append(operations, tracestore.Operation{
-			Name:     operation.Name,
-			SpanKind: operation.SpanKind,
-		})
-	}
-	return operations, nil
+	return tr.spanReader.GetOperations(ctx, query)
 }
 
 func (tr *TraceReader) FindTraces(
@@ -105,11 +105,11 @@ func (tr *TraceReader) FindTraces(
 func (tr *TraceReader) FindTraceIDs(
 	ctx context.Context,
 	query tracestore.TraceQueryParams,
-) iter.Seq2[[]tracestore.FoundTraceID, error] {
-	return func(yield func([]tracestore.FoundTraceID, error) bool) {
+) iter.Seq2[tracestore.PageChunk[[]tracestore.FoundTraceID], error] {
+	return func(yield func(tracestore.PageChunk[[]tracestore.FoundTraceID], error) bool) {
 		traceIDs, err := tr.spanReader.FindTraceIDs(ctx, GetV1QueryParameters(query))
 		if err != nil {
-			yield(nil, err)
+			yield(tracestore.PageChunk[[]tracestore.FoundTraceID]{}, err)
 			return
 		}
 		otelIDs := make([]tracestore.FoundTraceID, 0, len(traceIDs))
@@ -118,7 +118,8 @@ func (tr *TraceReader) FindTraceIDs(
 				TraceID: FromV1TraceID(traceID),
 			})
 		}
-		yield(otelIDs, nil)
+		// TODO: Populate NextPageToken when the v1 adapter supports RFC 0014 pagination.
+		yield(tracestore.PageChunk[[]tracestore.FoundTraceID]{Results: otelIDs}, nil)
 	}
 }
 

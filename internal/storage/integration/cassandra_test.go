@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 
 	casconfig "github.com/jaegertracing/jaeger/internal/storage/cassandra/config"
+	"github.com/jaegertracing/jaeger/internal/storage/integration/capabilities"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/dependencystore"
 	cassandrav1 "github.com/jaegertracing/jaeger/internal/storage/v1/cassandra"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/cassandra"
@@ -30,9 +31,7 @@ type CassandraStorageIntegration struct {
 func newCassandraStorageIntegration() *CassandraStorageIntegration {
 	s := &CassandraStorageIntegration{
 		StorageIntegration: StorageIntegration{
-			GetDependenciesReturnsSource: true,
-
-			SkipList: CassandraSkippedTests,
+			Capabilities: capabilities.Cassandra(),
 		},
 	}
 	s.CleanUp = s.cleanUp
@@ -46,26 +45,15 @@ func (s *CassandraStorageIntegration) cleanUp(t *testing.T) {
 func (s *CassandraStorageIntegration) initializeCassandra(t *testing.T) {
 	username := os.Getenv("CASSANDRA_USERNAME")
 	password := os.Getenv("CASSANDRA_PASSWORD")
-	cfg := casconfig.Configuration{
-		Schema: casconfig.Schema{
-			Keyspace: "jaeger_v1_dc1",
-		},
-		Connection: casconfig.Connection{
-			Servers: []string{"127.0.0.1"},
-			Authenticator: casconfig.Authenticator{
-				Basic: casconfig.BasicAuthenticator{
-					Username:              username,
-					Password:              password,
-					AllowedAuthenticators: []string{"org.apache.cassandra.auth.PasswordAuthenticator"},
-				},
-			},
-			TLS: configtls.ClientConfig{
-				Insecure: true,
-			},
-		},
+	cfg := casconfig.DefaultConfiguration()
+	cfg.Schema.Keyspace = "jaeger_v1_dc1"
+	cfg.Connection.Servers = []string{"127.0.0.1"}
+	cfg.Connection.Authenticator.Basic = casconfig.BasicAuthenticator{
+		Username:              username,
+		Password:              password,
+		AllowedAuthenticators: []string{"org.apache.cassandra.auth.PasswordAuthenticator"},
 	}
-	defCfg := casconfig.DefaultConfiguration()
-	cfg.ApplyDefaults(&defCfg)
+	cfg.Connection.TLS = configtls.ClientConfig{Insecure: true}
 	opts := cassandrav1.Options{
 		Configuration: cfg,
 		Index: cassandrav1.IndexConfig{
@@ -106,7 +94,7 @@ func (s *CassandraStorageIntegration) initializeDependencyReaderAndWriter(t *tes
 }
 
 func TestCassandraStorage(t *testing.T) {
-	SkipUnlessEnv(t, "cassandra")
+	SkipUnlessEnv(t, StorageCassandra)
 	t.Cleanup(func() {
 		testutils.VerifyGoLeaksOnce(t)
 	})

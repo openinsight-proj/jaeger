@@ -79,7 +79,7 @@ teardown() {
   else
     docker compose -f "$docker_compose_file" down
   fi
-  
+
   echo "::endgroup::"
 }
 trap teardown EXIT
@@ -113,10 +113,10 @@ if [[ "${runtime}" == "k8s" ]]; then
 
   echo '::group:: run on Kubernetes'
   echo '::group:: Loading images into Kind cluster'
-  
-  docker pull localhost:5000/jaegertracing/jaeger:"${GITHUB_SHA}"
-  docker pull localhost:5000/jaegertracing/example-hotrod:"${GITHUB_SHA}"
-  
+
+  bash scripts/utils/retry.sh docker pull localhost:5000/jaegertracing/jaeger:"${GITHUB_SHA}"
+  bash scripts/utils/retry.sh docker pull localhost:5000/jaegertracing/example-hotrod:"${GITHUB_SHA}"
+
   # Get the actual cluster name
   CLUSTER_NAME=$(kind get clusters | head -n1)
   if [[ -n "$CLUSTER_NAME" ]]; then
@@ -127,7 +127,7 @@ if [[ "${runtime}" == "k8s" ]]; then
     echo "No Kind clusters found!"
     exit 1
   fi
-  
+
   bash ./examples/oci/deploy-all.sh local "${GITHUB_SHA}"
   kubectl wait --for=condition=available --timeout=180s deployment/jaeger-hotrod
   kubectl wait --for=condition=available --timeout=180s deployment/jaeger
@@ -140,7 +140,11 @@ if [[ "${runtime}" == "k8s" ]]; then
 
 else
   echo '::group:: docker compose'
-  JAEGER_VERSION=$GITHUB_SHA HOTROD_VERSION=$GITHUB_SHA REGISTRY="localhost:5000/" docker compose -f "$docker_compose_file" up -d
+  (
+    export JAEGER_VERSION=$GITHUB_SHA HOTROD_VERSION=$GITHUB_SHA REGISTRY="localhost:5000/"
+    bash scripts/utils/retry.sh docker compose -f "$docker_compose_file" pull
+    docker compose -f "$docker_compose_file" up -d
+  )
   echo '::endgroup::'
 fi
 
@@ -183,9 +187,9 @@ SLEEP_INTERVAL=3
 
 poll_jaeger() {
   local trace_id=$1
-  local url="${JAEGER_QUERY_URL}/api/traces/${trace_id}"
+  local url="${JAEGER_QUERY_URL}/api/v3/traces/${trace_id}"
 
-  curl -s "${url}" | jq '.data[0].spans | length' || echo "0"
+  curl -s "${url}" | jq '[.result.resourceSpans[]?.scopeSpans[]?.spans[]?] | length' || echo "0"
 }
 
 # Poll Jaeger until trace with desired number of spans is loaded or we timeout.

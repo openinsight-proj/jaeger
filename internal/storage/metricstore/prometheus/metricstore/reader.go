@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -28,10 +29,6 @@ import (
 	"github.com/jaegertracing/jaeger/internal/storage/metricstore/prometheus/metricstore/dbmodel"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore"
 	"github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
-)
-
-const (
-	minStep = time.Millisecond
 )
 
 type (
@@ -254,11 +251,6 @@ func (m MetricsReader) GetErrorRates(ctx context.Context, requestParams *metrics
 	return errorMetrics, nil
 }
 
-// GetMinStepDuration gets the minimum step duration (the smallest possible duration between two data points in a time series) supported.
-func (MetricsReader) GetMinStepDuration(_ context.Context, _ *metricstore.MinStepDurationQueryParameters) (time.Duration, error) {
-	return minStep, nil
-}
-
 // executeQuery executes a query against a Prometheus-compliant metrics backend.
 func (m MetricsReader) executeQuery(ctx context.Context, p metricsQueryParams) (*metrics.MetricFamily, error) {
 	if p.GroupByOperation {
@@ -309,8 +301,14 @@ func (m MetricsReader) buildPromQuery(metricsParams metricsQueryParams) string {
 	if len(metricsParams.SpanKinds) > 0 {
 		spanKindFilter = fmt.Sprintf(`span_kind =~ %q`, strings.Join(metricsParams.SpanKinds, "|"))
 	}
+	// Service names are literals, but the =~ matcher that ORs them together
+	// would read regex metacharacters in a name ('.', '(', '\' ...) as syntax.
+	serviceNames := make([]string, len(metricsParams.ServiceNames))
+	for i, name := range metricsParams.ServiceNames {
+		serviceNames[i] = regexp.QuoteMeta(name)
+	}
 	promParams := promQueryParams{
-		serviceFilter:  strings.Join(metricsParams.ServiceNames, "|"),
+		serviceFilter:  strings.Join(serviceNames, "|"),
 		spanKindFilter: spanKindFilter,
 		rate:           promqlDurationString(metricsParams.RatePer),
 		groupBy:        strings.Join(groupBy, ","),
