@@ -8,15 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 
 	"github.com/jaegertracing/jaeger/internal/auth/bearertoken"
+	"github.com/jaegertracing/jaeger/internal/headerforwarding"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/depstore"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
 	"github.com/jaegertracing/jaeger/internal/telemetry"
@@ -120,6 +122,10 @@ func (f *Factory) initializeConnections(
 	if f.config.Auth.HasValue() {
 		return errors.New("authenticator is not supported")
 	}
+	const maxRecvMsgSizeMiB = math.MaxInt / (1024 * 1024)
+	if f.config.MaxRecvMsgSizeMiB < 0 || f.config.MaxRecvMsgSizeMiB > maxRecvMsgSizeMiB {
+		return fmt.Errorf("max_recv_msg_size_mib must be between 0 and %d, got %d", maxRecvMsgSizeMiB, f.config.MaxRecvMsgSizeMiB)
+	}
 
 	unaryInterceptors := []grpc.UnaryClientInterceptor{bearertoken.NewUnaryClientInterceptor()}
 	streamInterceptors := []grpc.StreamClientInterceptor{bearertoken.NewStreamClientInterceptor()}
@@ -129,19 +135,30 @@ func (f *Factory) initializeConnections(
 		streamInterceptors = append(streamInterceptors, tenancy.NewClientStreamInterceptor(tenancyMgr))
 	}
 
+	// HeaderForwarding acts as an enable switch: header capture happens on the query
+	// server side (HTTP/gRPC server interceptors); the client interceptors here simply
+	// forward whatever was captured into outgoing metadata.
+	if len(f.config.HeaderForwarding) > 0 {
+		unaryInterceptors = append(unaryInterceptors, headerforwarding.NewUnaryClientInterceptor())
+		streamInterceptors = append(streamInterceptors, headerforwarding.NewStreamClientInterceptor())
+	}
+
+	if f.config.Timeout > 0 {
+		unaryInterceptors = append(unaryInterceptors, timeoutUnaryClientInterceptor(f.config.Timeout))
+	}
+
 	baseOpts := []grpc.DialOption{
 		grpc.WithChainUnaryInterceptor(unaryInterceptors...),
 		grpc.WithChainStreamInterceptor(streamInterceptors...),
 	}
+	if f.config.MaxRecvMsgSizeMiB > 0 {
+		baseOpts = append(baseOpts, grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(f.config.MaxRecvMsgSizeMiB*1024*1024),
+		))
+	}
 
 	createConn := func(telset component.TelemetrySettings, gcs *configgrpc.ClientConfig) (*grpc.ClientConn, error) {
-		opts := append(baseOpts, grpc.WithStatsHandler(
-			otelgrpc.NewClientHandler(
-				otelgrpc.WithTracerProvider(telset.TracerProvider),
-				otelgrpc.WithMeterProvider(telset.MeterProvider),
-			),
-		))
-		return newClient(telset, gcs, opts...)
+		return newClient(telset, gcs, baseOpts...)
 	}
 
 	readerConn, err := createConn(readerTelset, readerConfig)
@@ -157,4 +174,22 @@ func (f *Factory) initializeConnections(
 	f.readerConn, f.writerConn = readerConn, writerConn
 
 	return nil
+}
+
+// timeoutUnaryClientInterceptor bounds every unary call by the configured timeout.
+// Streaming calls are not bounded, because their deadline would also cover the time
+// the caller spends consuming the stream.
+func timeoutUnaryClientInterceptor(timeout time.Duration) grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }

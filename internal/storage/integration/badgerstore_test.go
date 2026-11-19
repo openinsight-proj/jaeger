@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
+	"github.com/jaegertracing/jaeger/internal/storage/integration/capabilities"
 	v1badger "github.com/jaegertracing/jaeger/internal/storage/v1/badger"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/badger"
 	"github.com/jaegertracing/jaeger/internal/telemetry"
@@ -49,14 +50,13 @@ func (s *BadgerIntegrationStorage) cleanUp(t *testing.T) {
 }
 
 func TestBadgerStorage(t *testing.T) {
-	SkipUnlessEnv(t, "badger")
+	SkipUnlessEnv(t, StorageBadger)
 	t.Cleanup(func() {
 		testutils.VerifyGoLeaksOnce(t)
 	})
 	s := &BadgerIntegrationStorage{
 		StorageIntegration: StorageIntegration{
-			// TODO: remove this badger supports returning spanKind from GetOperations
-			GetOperationsMissingSpanKind: true,
+			Capabilities: capabilities.Badger(),
 		},
 	}
 	s.CleanUp = s.cleanUp

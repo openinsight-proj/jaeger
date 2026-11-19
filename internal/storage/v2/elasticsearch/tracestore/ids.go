@@ -4,35 +4,14 @@
 package tracestore
 
 import (
-	"encoding/hex"
-
-	"go.opentelemetry.io/collector/pdata/pcommon"
-
-	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/dbmodel"
 )
 
-func convertTraceIDFromDB(dbTraceId dbmodel.TraceID) (pcommon.TraceID, error) {
-	var traceId [16]byte
-	traceBytes, err := hex.DecodeString(string(dbTraceId))
-	if err != nil {
-		return pcommon.TraceID{}, err
-	}
-	copy(traceId[:], traceBytes)
-	return traceId, nil
-}
-
-func fromDbSpanId(dbSpanId dbmodel.SpanID) (pcommon.SpanID, error) {
-	var spanId [8]byte
-	spanIdBytes, err := hex.DecodeString(string(dbSpanId))
-	if err != nil {
-		return pcommon.SpanID{}, err
-	}
-	copy(spanId[:], spanIdBytes)
-	return spanId, nil
-}
-
-// TODO extend DB model to support parent span ID directly
 func getParentSpanId(dbSpan *dbmodel.Span) dbmodel.SpanID {
+	if dbSpan.ParentSpanID != "" {
+		return dbSpan.ParentSpanID
+	}
+	// Fallback for data written before parentSpanID was populated on the write path.
 	var followsFromRef *dbmodel.Reference
 	for i := range dbSpan.References {
 		ref := dbSpan.References[i]

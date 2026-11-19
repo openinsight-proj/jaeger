@@ -173,19 +173,15 @@ func TestSpanReader_GetServices(t *testing.T) {
 func TestSpanReader_GetOperations(t *testing.T) {
 	tests := []struct {
 		name               string
-		query              spanstore.OperationQueryParameters
-		expectedQuery      tracestore.OperationQueryParams
+		query              tracestore.OperationQueryParams
 		operations         []tracestore.Operation
-		expectedOperations []spanstore.Operation
+		expectedOperations []tracestore.Operation
 		err                error
 		expectedErr        error
 	}{
 		{
 			name: "error getting operations",
-			query: spanstore.OperationQueryParameters{
-				ServiceName: "service1",
-			},
-			expectedQuery: tracestore.OperationQueryParams{
+			query: tracestore.OperationQueryParams{
 				ServiceName: "service1",
 			},
 			err:         assert.AnError,
@@ -193,28 +189,22 @@ func TestSpanReader_GetOperations(t *testing.T) {
 		},
 		{
 			name: "no operations",
-			query: spanstore.OperationQueryParameters{
-				ServiceName: "service1",
-			},
-			expectedQuery: tracestore.OperationQueryParams{
+			query: tracestore.OperationQueryParams{
 				ServiceName: "service1",
 			},
 			operations:         []tracestore.Operation{},
-			expectedOperations: []spanstore.Operation{},
+			expectedOperations: []tracestore.Operation{},
 		},
 		{
 			name: "multiple operations",
-			query: spanstore.OperationQueryParameters{
-				ServiceName: "service1",
-			},
-			expectedQuery: tracestore.OperationQueryParams{
+			query: tracestore.OperationQueryParams{
 				ServiceName: "service1",
 			},
 			operations: []tracestore.Operation{
 				{Name: "operation1", SpanKind: "kind1"},
 				{Name: "operation2", SpanKind: "kind2"},
 			},
-			expectedOperations: []spanstore.Operation{
+			expectedOperations: []tracestore.Operation{
 				{Name: "operation1", SpanKind: "kind1"},
 				{Name: "operation2", SpanKind: "kind2"},
 			},
@@ -223,7 +213,7 @@ func TestSpanReader_GetOperations(t *testing.T) {
 
 	for _, test := range tests {
 		tr := tracestoremocks.Reader{}
-		tr.On("GetOperations", mock.Anything, test.expectedQuery).
+		tr.On("GetOperations", mock.Anything, test.query).
 			Return(test.operations, test.err).Once()
 
 		sr := SpanReader{
@@ -248,14 +238,28 @@ func TestSpanReader_FindTraces(t *testing.T) {
 		{
 			name: "error finding traces",
 			query: &spanstore.TraceQueryParameters{
+				NumTraces:   10,
 				ServiceName: "service1",
 			},
 			expectedQuery: tracestore.TraceQueryParams{
+				SearchDepth: 10,
 				ServiceName: "service1",
 				Attributes:  pcommon.NewMap(),
 			},
 			err:         assert.AnError,
 			expectedErr: assert.AnError,
+		},
+		{
+			name: "preserves search depth without clamping",
+			query: &spanstore.TraceQueryParameters{
+				NumTraces:   tracestore.MaxSearchDepth + 1,
+				ServiceName: "service1",
+			},
+			expectedQuery: tracestore.TraceQueryParams{
+				SearchDepth: tracestore.MaxSearchDepth + 1,
+				ServiceName: "service1",
+				Attributes:  pcommon.NewMap(),
+			},
 		},
 		{
 			name: "no traces found",
@@ -409,8 +413,8 @@ func TestSpanReader_FindTraceIDs(t *testing.T) {
 	for _, test := range tests {
 		tr := tracestoremocks.Reader{}
 		tr.On("FindTraceIDs", mock.Anything, test.expectedQuery).
-			Return(iter.Seq2[[]tracestore.FoundTraceID, error](func(yield func([]tracestore.FoundTraceID, error) bool) {
-				yield(test.traceIDs, test.err)
+			Return(iter.Seq2[tracestore.PageChunk[[]tracestore.FoundTraceID], error](func(yield func(tracestore.PageChunk[[]tracestore.FoundTraceID], error) bool) {
+				yield(tracestore.PageChunk[[]tracestore.FoundTraceID]{Results: test.traceIDs}, test.err)
 			})).Once()
 
 		sr := SpanReader{

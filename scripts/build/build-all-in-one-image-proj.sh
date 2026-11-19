@@ -77,18 +77,6 @@ set -x
 GOARCH=${GOARCH:-$(go env GOARCH)}
 repo="openinsight-proj/${BINARY}"
 
-# verify Node.js version
-expected_version="v$(cat jaeger-ui/.nvmrc)"
-version=$(node --version)
-major_version=${version%.*.*}
-
-if [ "$major_version" = "$expected_version" ] ; then
-  echo "Node version is as expected: $version"
-else
-  echo "ERROR: installed Node version $version doesn't match expected version $expected_version"
-  exit 1
-fi
-
 make build-ui
 
 run_integration_test() {

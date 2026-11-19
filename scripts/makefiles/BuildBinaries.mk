@@ -23,28 +23,32 @@ else
 	TARGET = debug
 endif
 
+# Path to the jaeger-ui repository. Override to use a local checkout instead of the submodule:
+#   make build-ui JAEGER_UI_DIR=/path/to/jaeger-ui
+JAEGER_UI_DIR ?= jaeger-ui
+
 .PHONY: build-ui
 build-ui: cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
 
-cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz: jaeger-ui/packages/jaeger-ui/build/index.html
+cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz: $(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html
 	# do not delete dot-files
 	rm -rf cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/*
-	cp -r jaeger-ui/packages/jaeger-ui/build/* cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
+	cp -r "$(JAEGER_UI_DIR)/packages/jaeger-ui/build/"* cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
 	find cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual -type f | grep -v .gitignore | xargs gzip --no-name
 	# copy the timestamp for index.html.gz from the original file
-	touch -t $$(date -r jaeger-ui/packages/jaeger-ui/build/index.html '+%Y%m%d%H%M.%S') cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
+	touch -t $$(date -r "$(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html" '+%Y%m%d%H%M.%S') cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
 	ls -lF cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/
 
-jaeger-ui/packages/jaeger-ui/build/index.html:
+$(JAEGER_UI_DIR)/packages/jaeger-ui/build/index.html:
 	$(MAKE) rebuild-ui
 
 .PHONY: rebuild-ui
 rebuild-ui:
 	@echo "::group::rebuild-ui logs"
-	bash ./scripts/build/rebuild-ui.sh
-	@echo "NOTE: This target only rebuilds the UI assets inside jaeger-ui/packages/jaeger-ui/build/."
-	@echo "NOTE: To make them usable from query-service run 'make build-ui'."
+	JAEGER_UI_DIR="$(JAEGER_UI_DIR)" bash ./scripts/build/rebuild-ui.sh
 	@echo "::endgroup::"
+	rm -f cmd/jaeger/internal/extension/jaegerquery/internal/ui/actual/index.html.gz
+	$(MAKE) build-ui JAEGER_UI_DIR="$(JAEGER_UI_DIR)"
 
 .PHONY: build-examples
 build-examples:
@@ -169,3 +173,18 @@ build-all-platforms:
 	  echo "Building binaries for $$platform"; \
 	  $(MAKE) build-binaries-$$platform; \
 	done
+
+# Build Jaeger using ocb (OpenTelemetry Collector Builder) with the Workspace
+# Overwrite pattern: ocb generates the sources, then we replace its vanilla
+# main.go with one that calls jaegercli.NewCommand so the binary keeps Jaeger's
+# subcommands and embedded all-in-one config. The main*.go files removed below
+# are ocb's main.go and its main_{others,windows}.go wrappers.
+.PHONY: build-ocb
+build-ocb: $(OCB)
+	@echo "Generating Jaeger sources with ocb"
+	$(OCB) --config cmd/jaeger/builder.yaml --skip-strict-versioning --skip-compilation
+	rm -f cmd/jaeger/_build/main*.go
+	cp cmd/jaeger/jaegercli/main.go.tmpl cmd/jaeger/_build/main.go
+	@echo "Compiling ocb-built Jaeger"
+	cd cmd/jaeger/_build && go mod tidy && $(GOBUILD_EXEC) $(BUILD_INFO) -o jaeger .
+	@echo "✅ ocb build successful: cmd/jaeger/_build/jaeger"

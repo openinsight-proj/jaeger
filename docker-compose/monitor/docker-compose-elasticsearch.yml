@@ -1,10 +1,14 @@
+# Copyright (c) 2026 The Jaeger Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 services:
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.3.0@sha256:4f6bdcb742e892539c6ac49b0dd3e4e182e90218546e8c6a22db378c344acb60
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3@sha256:f456578fc2a620a8a4f4c21d070fff1f6070345adb2be5e5626b65be72aea350
     networks:
       - backend
     environment:
       - discovery.type=single-node
+      - cluster.routing.allocation.disk.threshold_enabled=false
       - http.host=0.0.0.0
       - transport.host=127.0.0.1
       - xpack.security.enabled=false  # Disable security features

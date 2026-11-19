@@ -18,14 +18,33 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 
-	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/dbmodel"
-	"github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/spanstore"
-	"github.com/jaegertracing/jaeger/internal/storage/v1/elasticsearch/spanstore/mocks"
+	builder "github.com/jaegertracing/jaeger/internal/expression"
 	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/dbmodel"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/elasticsearch/tracestore/core/mocks"
 )
 
+// TestTraceReader_SearchCapabilities pins the declaration the query service reads before it
+// dispatches: the search query adds its process.serviceName clause only when the query
+// carries a service name, so Elasticsearch/OpenSearch answers a query that omits it (RFC
+// 0013), and it declares the part of the structured filter model it lowers (RFC 0005 §7).
+func TestTraceReader_SearchCapabilities(t *testing.T) {
+	caps, err := (&TraceReader{}).SearchCapabilities(context.Background())
+	require.NoError(t, err)
+	filter := core.FilterCapabilities()
+	assert.Equal(t, tracestore.SearchCapabilities{
+		WithoutServiceName:  true,
+		SameSpanConjunction: true,
+		Filter:              &filter,
+		SpanSearch:          true,
+		SpanSorting:         true,
+		Paginated:           true,
+	}, caps)
+}
+
 func TestTraceReader_GetServices(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	services := []string{"service1", "service2"}
 	coreReader.On("GetServices", mock.Anything).Return(services, nil)
@@ -35,7 +54,7 @@ func TestTraceReader_GetServices(t *testing.T) {
 }
 
 func TestTraceReader_GetOperations(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	operations := []dbmodel.Operation{
 		{
@@ -64,7 +83,7 @@ func TestTraceReader_GetOperations(t *testing.T) {
 }
 
 func TestTraceReader_GetOperations_Error(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	coreReader.On("GetOperations", mock.Anything, mock.Anything).Return(nil, errors.New("error"))
 	operations, err := reader.GetOperations(context.Background(), tracestore.OperationQueryParams{})
@@ -73,7 +92,7 @@ func TestTraceReader_GetOperations_Error(t *testing.T) {
 }
 
 func TestTraceReader_GetTraces(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	tracesStr, spanStr := loadFixtures(t, 1)
 	var span dbmodel.Span
@@ -95,18 +114,18 @@ func testTraceReaderGetTracesAndFindTracesErrors(t *testing.T, fxnName string, a
 	tests := []struct {
 		name        string
 		expectedErr string
-		mockFxn     func(m *mocks.CoreSpanReader)
+		mockFxn     func(m *mocks.Reader)
 	}{
 		{
 			name:        "some error from core reader",
 			expectedErr: "some error",
-			mockFxn: func(m *mocks.CoreSpanReader) {
+			mockFxn: func(m *mocks.Reader) {
 				m.On(fxnName, mock.Anything, mock.Anything).Return(nil, errors.New("some error"))
 			},
 		},
 		{
 			name: "conversion error",
-			mockFxn: func(m *mocks.CoreSpanReader) {
+			mockFxn: func(m *mocks.Reader) {
 				dbTraces := []dbmodel.Trace{
 					{
 						Spans: []dbmodel.Span{
@@ -123,7 +142,7 @@ func testTraceReaderGetTracesAndFindTracesErrors(t *testing.T, fxnName string, a
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			coreReader := &mocks.CoreSpanReader{}
+			coreReader := &mocks.Reader{}
 			reader := TraceReader{spanReader: coreReader}
 			tt.mockFxn(coreReader)
 			traces := actualTraces(reader)
@@ -142,7 +161,7 @@ func TestTraceReader_GetTraces_Errors(t *testing.T) {
 }
 
 func TestTraceReader_FindTraces(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	tracesStr, spanStr := loadFixtures(t, 1)
 	var span dbmodel.Span
@@ -171,7 +190,7 @@ func TestTraceReader_FindTraces_Errors(t *testing.T) {
 }
 
 func TestTraceReader_FindTraceIDs(t *testing.T) {
-	coreReader := &mocks.CoreSpanReader{}
+	coreReader := &mocks.Reader{}
 	reader := TraceReader{spanReader: coreReader}
 	dbTraceIDs := []dbmodel.TraceID{
 		"00000000000000010000000000000000",
@@ -183,11 +202,12 @@ func TestTraceReader_FindTraceIDs(t *testing.T) {
 		expected = append(expected, fromDBTraceId(t, dbTraceID))
 	}
 	coreReader.On("FindTraceIDs", mock.Anything, mock.Anything).Return(dbTraceIDs, nil)
-	for traceIds, err := range reader.FindTraceIDs(context.Background(), tracestore.TraceQueryParams{
+	for chunk, err := range reader.FindTraceIDs(context.Background(), tracestore.TraceQueryParams{
 		Attributes: pcommon.NewMap(),
 	}) {
 		require.NoError(t, err)
-		require.Equal(t, expected, traceIds)
+		require.Empty(t, chunk.NextPageToken)
+		require.Equal(t, expected, chunk.Results)
 	}
 }
 
@@ -211,7 +231,7 @@ func TestTraceReader_FindTraceIDs_Error(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			coreReader := &mocks.CoreSpanReader{}
+			coreReader := &mocks.Reader{}
 			attrs := pcommon.NewMap()
 			attrs.PutStr("key1", "val1")
 			ts := time.Now()
@@ -233,27 +253,53 @@ func TestTraceReader_FindTraceIDs_Error(t *testing.T) {
 				StartTimeMax:  ts.Add(1 * time.Hour),
 				DurationMin:   1 * time.Hour,
 				DurationMax:   1 * time.Hour,
-				NumTraces:     10,
+				SearchDepth:   10,
 			}
 			coreReader.On("FindTraceIDs", mock.Anything, dbTraceQueryParams).Return(test.traceIdsFromCoreReader, test.errFromCoreReader)
 			reader := TraceReader{spanReader: coreReader}
-			for traceIds, err := range reader.FindTraceIDs(context.Background(), traceQueryParams) {
+			for chunk, err := range reader.FindTraceIDs(context.Background(), traceQueryParams) {
 				require.ErrorContains(t, err, test.expectedErr)
-				require.Nil(t, traceIds)
+				require.Empty(t, chunk.Results)
+				require.Empty(t, chunk.NextPageToken)
 			}
 		})
 	}
 }
 
+// TestTraceReader_FindTraceIDs_Filter checks that a structured filter reaches the core
+// reader as the expression tree it is. The query service keeps it mutually exclusive with
+// the legacy predicate fields, so those travel empty alongside it.
+func TestTraceReader_FindTraceIDs_Filter(t *testing.T) {
+	filter := (builder.Predicate{}).Span().Duration.Gt("2s")
+	ts := time.Now()
+	coreReader := &mocks.Reader{}
+	coreReader.On("FindTraceIDs", mock.Anything, dbmodel.TraceQueryParameters{
+		Tags:         map[string]string{},
+		StartTimeMin: ts,
+		StartTimeMax: ts.Add(time.Hour),
+		Filter:       filter,
+	}).Return([]dbmodel.TraceID{}, nil)
+	reader := TraceReader{spanReader: coreReader}
+	for _, err := range reader.FindTraceIDs(context.Background(), tracestore.TraceQueryParams{
+		Attributes:   pcommon.NewMap(),
+		StartTimeMin: ts,
+		StartTimeMax: ts.Add(time.Hour),
+		Filter:       filter,
+	}) {
+		require.NoError(t, err)
+	}
+	coreReader.AssertExpectations(t)
+}
+
 func Test_NewTraceReader(t *testing.T) {
-	reader := NewTraceReader(spanstore.SpanReaderParams{
+	reader := NewTraceReader(core.SpanReaderParams{
 		Logger: zap.NewNop(),
 	})
-	assert.IsType(t, &spanstore.SpanReader{}, reader.spanReader)
+	assert.IsType(t, &core.SpanReader{}, reader.spanReader)
 }
 
 func fromDBTraceId(t *testing.T, traceID dbmodel.TraceID) tracestore.FoundTraceID {
-	traceId, err := convertTraceIDFromDB(traceID)
+	traceId, err := traceID.ToOTEL()
 	require.NoError(t, err)
 	return tracestore.FoundTraceID{
 		TraceID: traceId,

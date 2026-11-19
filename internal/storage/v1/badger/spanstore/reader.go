@@ -18,6 +18,7 @@ import (
 
 	"github.com/jaegertracing/jaeger-idl/model/v1"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/spanstore"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
 )
 
 // Most of these errors are common with the ES and Cassandra backends. Each backend has slightly different validation rules.
@@ -65,7 +66,7 @@ type executionPlan struct {
 	startTimeMin []byte
 	startTimeMax []byte
 
-	limit int
+	limit uint32
 
 	// mergeOuter is the result of merge-join of inner and outer result sets
 	mergeOuter [][]byte
@@ -213,10 +214,10 @@ func (r *TraceReader) scanTimeRange(plan *executionPlan) ([]model.TraceID, error
 		return bytes.Compare(b[sizeOfTraceID+1:sizeOfTraceID+1+8], a[sizeOfTraceID+1:sizeOfTraceID+1+8])
 	})
 
-	sizeCount := len(traceKeys)
-	if plan.limit > 0 && plan.limit < sizeCount {
-		sizeCount = plan.limit
+	if plan.limit > 0 && uint64(plan.limit) < uint64(len(traceKeys)) {
+		traceKeys = traceKeys[:plan.limit]
 	}
+	sizeCount := len(traceKeys)
 	traceIDs := make([]model.TraceID, sizeCount)
 
 	for i := 0; i < sizeCount; i++ {
@@ -245,14 +246,14 @@ func (r *TraceReader) GetServices(context.Context) ([]string, error) {
 // GetOperations fetches operations in the service and empty slice if service does not exists
 func (r *TraceReader) GetOperations(
 	_ context.Context,
-	query spanstore.OperationQueryParameters,
-) ([]spanstore.Operation, error) {
+	query tracestore.OperationQueryParams,
+) ([]tracestore.Operation, error) {
 	return r.cache.GetOperations(query.ServiceName)
 }
 
 // setQueryDefaults alters the query with defaults if certain parameters are not set
 func setQueryDefaults(query *spanstore.TraceQueryParameters) {
-	if query.NumTraces <= 0 {
+	if query.NumTraces == 0 {
 		query.NumTraces = defaultNumTraces
 	}
 }
@@ -335,9 +336,9 @@ func (r *TraceReader) indexSeeksToTraceIDs(plan *executionPlan, indexSeeks [][]b
 }
 
 func filterIDs(plan *executionPlan, innerIDs [][]byte) []model.TraceID {
-	traces := make([]model.TraceID, 0, plan.limit)
+	traces := make([]model.TraceID, 0)
 
-	items := 0
+	var items uint32
 	for i := range innerIDs {
 		trID := bytesToTraceID(innerIDs[i])
 

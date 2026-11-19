@@ -28,3 +28,7 @@ func Test_CreateExtension(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, ext)
 }
+
+func TestDefaultConfigDisablesSelfTracing(t *testing.T) {
+	assert.False(t, createDefaultConfig().(*Config).QueryOptions.EnableTracing)
+}

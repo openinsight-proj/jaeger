@@ -148,7 +148,8 @@ func newGRPCServer(t *testing.T, q *querysvc.QueryService, logger *zap.Logger, t
 	lis, _ := net.Listen("tcp", ":0")
 	var grpcOpts []grpc.ServerOption
 	if tenancyMgr.Enabled {
-		grpcOpts = append(grpcOpts,
+		grpcOpts = append(
+			grpcOpts,
 			grpc.StreamInterceptor(tenancy.NewGuardingStreamInterceptor(tenancyMgr)),
 			grpc.UnaryInterceptor(tenancy.NewGuardingUnaryInterceptor(tenancyMgr)),
 		)
@@ -511,7 +512,8 @@ func TestGetOperationsSuccessGRPC(t *testing.T) {
 			{Name: "get", SpanKind: "client"},
 		}
 		expectedNames := []string{"", "get"}
-		server.traceReader.On("GetOperations",
+		server.traceReader.On(
+			"GetOperations",
 			mock.Anything,
 			tracestore.OperationQueryParams{ServiceName: "abc/trifle"},
 		).Return(expectedOperations, nil).Once()
@@ -531,7 +533,8 @@ func TestGetOperationsSuccessGRPC(t *testing.T) {
 
 func TestGetOperationsFailureGRPC(t *testing.T) {
 	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
-		server.traceReader.On("GetOperations",
+		server.traceReader.On(
+			"GetOperations",
 			mock.Anything,
 			tracestore.OperationQueryParams{ServiceName: "trifle"},
 		).Return(nil, errStorageGRPC).Once()
@@ -555,7 +558,8 @@ func TestGetDependenciesSuccessGRPC(t *testing.T) {
 	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
 		expectedDependencies := []model.DependencyLink{{Parent: "killer", Child: "queen", CallCount: 12}}
 		endTs := time.Now().UTC()
-		server.depReader.On("GetDependencies",
+		server.depReader.On(
+			"GetDependencies",
 			mock.Anything, // context.Context
 			depstore.QueryParameters{
 				StartTime: endTs.Add(-defaultDependencyLookbackDuration),
@@ -575,7 +579,8 @@ func TestGetDependenciesSuccessGRPC(t *testing.T) {
 func TestGetDependenciesFailureGRPC(t *testing.T) {
 	withServerAndClient(t, func(server *grpcServer, client *grpcClient) {
 		endTs := time.Now().UTC()
-		server.depReader.On("GetDependencies",
+		server.depReader.On(
+			"GetDependencies",
 			mock.Anything, // context.Context
 			depstore.QueryParameters{
 				StartTime: endTs.Add(-defaultDependencyLookbackDuration),
@@ -614,6 +619,31 @@ func TestGetDependenciesFailureUninitializedTimeGRPC(t *testing.T) {
 	}
 }
 
+func TestGetDependenciesFailureInvertedTimeRangeGRPC(t *testing.T) {
+	now := time.Now().UTC()
+	timeInputs := []struct {
+		name      string
+		startTime time.Time
+		endTime   time.Time
+	}{
+		{"end before start", now, now.Add(-time.Hour)},
+		{"end equal to start", now, now},
+	}
+
+	for _, input := range timeInputs {
+		t.Run(input.name, func(t *testing.T) {
+			withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
+				_, err := client.GetDependencies(context.Background(), &api_v2.GetDependenciesRequest{
+					StartTime: input.startTime,
+					EndTime:   input.endTime,
+				})
+
+				assertGRPCError(t, err, codes.InvalidArgument, "end_time must be after start_time")
+			})
+		})
+	}
+}
+
 // test from GRPCHandler and not grpcClient as Generated Go client panics with `nil` request
 func TestGetDependenciesNilRequestOnHandlerGRPC(t *testing.T) {
 	grpcHandler := &GRPCHandler{}
@@ -643,13 +673,17 @@ func initializeTenantedTestServerGRPC(t *testing.T, tm *tenancy.Manager) *grpcSe
 	traceReader := &tracestoremocks.Reader{}
 	dependencyReader := &depsmocks.Reader{}
 
+	// The baseline: a backend that requires a service name. Only service-less searches ask.
+	traceReader.On("SearchCapabilities", mock.Anything).
+		Return(tracestore.SearchCapabilities{}, nil).Maybe()
 	q := querysvc.NewQueryService(
 		traceReader,
 		dependencyReader,
 		querysvc.QueryServiceOptions{
 			ArchiveTraceReader: archiveTraceReader,
 			ArchiveTraceWriter: archiveTraceWriter,
-		})
+		},
+	)
 
 	server, addr := newGRPCServer(t, q, zap.NewNop(), tm)
 
@@ -700,12 +734,27 @@ func TestSearchTenancyGRPC(t *testing.T) {
 		assertGRPCError(t, err, codes.Unauthenticated, "missing tenant header")
 		assert.Nil(t, spanResChunk)
 
+		// An empty tenant is rejected even though there is no tenant allow-list
+		res, err = client.GetTrace(
+			withOutgoingMetadata(t, context.Background(), tm.Header, ""),
+			&api_v2.GetTraceRequest{
+				TraceID: mockTraceID,
+			},
+		)
+
+		require.NoError(t, err, "could not initiate GetTraceRequest")
+
+		spanResChunk, err = res.Recv()
+		assertGRPCError(t, err, codes.PermissionDenied, "unknown tenant")
+		assert.Nil(t, spanResChunk)
+
 		// Next try with tenancy
 		res, err = client.GetTrace(
 			withOutgoingMetadata(t, context.Background(), tm.Header, "acme"),
 			&api_v2.GetTraceRequest{
 				TraceID: mockTraceID,
-			})
+			},
+		)
 
 		spanResChunk, _ = res.Recv()
 
@@ -917,5 +966,72 @@ func traceIterator(trace *model.Trace, err error) iter.Seq2[[]ptrace.Traces, err
 				return
 			}
 		}
+	}
+}
+
+// TestFindTracesServiceNameRequired_GRPC pins the status code api_v2 reports for a query
+// this deployment's storage cannot serve. Every other error from the search iterator is
+// wrapped as Internal here, which would make a well-formed request look like a server
+// fault; the API v3 and HTTP layers answer Unimplemented / 501 the same way (RFC 0013 §3.3).
+func TestFindTracesServiceNameRequired_GRPC(t *testing.T) {
+	withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
+		res, err := client.FindTraces(context.Background(), &api_v2.FindTracesRequest{
+			Query: &api_v2.TraceQueryParameters{
+				StartTimeMin: time.Now().Add(-10 * time.Minute),
+				StartTimeMax: time.Now(),
+			},
+		})
+		require.NoError(t, err)
+
+		spanResChunk, err := res.Recv()
+		require.ErrorContains(t, err, "requires a service name")
+		assert.Equal(t, codes.Unimplemented, status.Code(err))
+		assert.Nil(t, spanResChunk)
+	})
+}
+
+// TestFindTracesRefusedByQueryService_GRPC pins that api_v2 answers InvalidArgument for a search
+// the query service refuses on its envelope: one with no time range, which this handler used to
+// forward to storage, and one whose search depth is out of range, which it used to pass through.
+// No FindTraces expectation is set, so a request reaching storage aborts the test.
+func TestFindTracesRefusedByQueryService_GRPC(t *testing.T) {
+	tests := map[string]struct {
+		query   *api_v2.TraceQueryParameters
+		wantErr string
+	}{
+		"no time range": {
+			query:   &api_v2.TraceQueryParameters{ServiceName: "service"},
+			wantErr: "min and max start time are required",
+		},
+		"negative search depth": {
+			query: &api_v2.TraceQueryParameters{
+				ServiceName:  "service",
+				StartTimeMin: time.Now().Add(-10 * time.Minute),
+				StartTimeMax: time.Now(),
+				SearchDepth:  -1,
+			},
+			wantErr: "search depth must be in [0, 10000]",
+		},
+		"search depth above the maximum": {
+			query: &api_v2.TraceQueryParameters{
+				ServiceName:  "service",
+				StartTimeMin: time.Now().Add(-10 * time.Minute),
+				StartTimeMax: time.Now(),
+				SearchDepth:  int32(tracestore.MaxSearchDepth + 1),
+			},
+			wantErr: "search depth must be in [0, 10000]",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			withServerAndClient(t, func(_ *grpcServer, client *grpcClient) {
+				res, err := client.FindTraces(context.Background(), &api_v2.FindTracesRequest{Query: test.query})
+				require.NoError(t, err)
+
+				spanResChunk, err := res.Recv()
+				assertGRPCError(t, err, codes.InvalidArgument, test.wantErr)
+				assert.Nil(t, spanResChunk)
+			})
+		})
 	}
 }

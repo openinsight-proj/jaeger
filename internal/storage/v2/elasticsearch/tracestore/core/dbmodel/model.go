@@ -1,0 +1,200 @@
+// Copyright (c) 2019 The Jaeger Authors.
+// Copyright (c) 2018 Uber Technologies, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package dbmodel
+
+import (
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+
+	expression "github.com/jaegertracing/jaeger-idl/query/expression/v1"
+	"github.com/jaegertracing/jaeger/internal/storage/v2/api/tracestore"
+)
+
+// ReferenceType is the reference type of one span to another
+type ReferenceType string
+
+// TraceID is the shared trace ID of all spans in the trace.
+type TraceID string
+
+// SpanID is the id of a span
+type SpanID string
+
+// ToOTEL decodes the hex trace ID into its pdata form, left-padding a shorter
+// (e.g. 64-bit) id with zeros.
+func (t TraceID) ToOTEL() (pcommon.TraceID, error) {
+	var traceID [16]byte
+	traceIDHex := string(t)
+	if len(traceIDHex) > 32 {
+		return pcommon.TraceID{}, fmt.Errorf("trace ID from DB is too long: %d chars", len(traceIDHex))
+	}
+	if len(traceIDHex) < 32 {
+		traceIDHex = strings.Repeat("0", 32-len(traceIDHex)) + traceIDHex
+	}
+	traceBytes, err := hex.DecodeString(traceIDHex)
+	if err != nil {
+		return pcommon.TraceID{}, err
+	}
+	copy(traceID[:], traceBytes)
+	return traceID, nil
+}
+
+// ToOTEL decodes the hex span ID into its pdata form, left-padding a shorter id
+// with zeros.
+func (s SpanID) ToOTEL() (pcommon.SpanID, error) {
+	var spanID [8]byte
+	spanIDHex := string(s)
+	if len(spanIDHex) > 16 {
+		return pcommon.SpanID{}, fmt.Errorf("span ID from DB is too long: %d chars", len(spanIDHex))
+	}
+	if len(spanIDHex) < 16 {
+		spanIDHex = strings.Repeat("0", 16-len(spanIDHex)) + spanIDHex
+	}
+	spanIDBytes, err := hex.DecodeString(spanIDHex)
+	if err != nil {
+		return pcommon.SpanID{}, err
+	}
+	copy(spanID[:], spanIDBytes)
+	return spanID, nil
+}
+
+// ValueType is the type of a value stored in KeyValue struct.
+type ValueType string
+
+// Trace is the type of traces
+type Trace struct {
+	Spans []Span
+}
+
+const (
+	// ChildOf means a span is the child of another span
+	ChildOf ReferenceType = "CHILD_OF"
+	// FollowsFrom means a span follows from another span
+	FollowsFrom ReferenceType = "FOLLOWS_FROM"
+
+	// StringType indicates a string value stored in KeyValue
+	StringType ValueType = "string"
+	// BoolType indicates a Boolean value stored in KeyValue
+	BoolType ValueType = "bool"
+	// Int64Type indicates a 64bit signed integer value stored in KeyValue
+	Int64Type ValueType = "int64"
+	// Float64Type indicates a 64bit float value stored in KeyValue
+	Float64Type ValueType = "float64"
+	// BinaryType indicates an arbitrary byte array stored in KeyValue
+	BinaryType ValueType = "binary"
+)
+
+// Span is ES database representation of the domain span.
+type Span struct {
+	TraceID       TraceID     `json:"traceID"`
+	SpanID        SpanID      `json:"spanID"`
+	ParentSpanID  SpanID      `json:"parentSpanID,omitempty"`
+	Flags         uint32      `json:"flags,omitempty"`
+	OperationName string      `json:"operationName"`
+	References    []Reference `json:"references"`
+	StartTime     uint64      `json:"startTime"` // microseconds since Unix epoch
+	// ElasticSearch does not support a UNIX Epoch timestamp in microseconds,
+	// so Jaeger maps StartTime to a 'long' type. This extra StartTimeMillis field
+	// works around this issue, enabling timerange queries.
+	StartTimeMillis uint64     `json:"startTimeMillis"`
+	Duration        uint64     `json:"duration"` // microseconds
+	Tags            []KeyValue `json:"tags"`
+	// Alternative representation of tags for better kibana support
+	Tag     map[string]any `json:"tag,omitempty"`
+	Logs    []Log          `json:"logs"`
+	Process Process        `json:"process"`
+	// Timestamp is the span's start time as an RFC 3339 string, written only on the
+	// data stream path; other rotation strategies leave it empty. It has to be the
+	// string form rather than a number (RFC 0004 §3.3).
+	Timestamp string `json:"@timestamp,omitempty"`
+}
+
+// Reference is a reference from one span to another
+type Reference struct {
+	RefType ReferenceType `json:"refType"`
+	TraceID TraceID       `json:"traceID"`
+	SpanID  SpanID        `json:"spanID"`
+}
+
+// Process is the process emitting a set of spans
+type Process struct {
+	ServiceName string     `json:"serviceName"`
+	Tags        []KeyValue `json:"tags"`
+	// Alternative representation of tags for better kibana support
+	Tag map[string]any `json:"tag,omitempty"`
+}
+
+// Log is a log emitted in a span
+type Log struct {
+	Timestamp uint64     `json:"timestamp"`
+	Fields    []KeyValue `json:"fields"`
+}
+
+// KeyValue is a key-value pair with typed value.
+type KeyValue struct {
+	Key   string    `json:"key"`
+	Type  ValueType `json:"type,omitempty"`
+	Value any       `json:"value"`
+}
+
+// Service is the JSON struct for service:operation documents in ElasticSearch
+type Service struct {
+	ServiceName   string `json:"serviceName"`
+	OperationName string `json:"operationName"`
+}
+
+// Operation is the struct for span operation properties.
+type Operation struct {
+	Name     string
+	SpanKind string
+}
+
+// OperationQueryParameters contains parameters of query operations, empty spanKind means get operations for all kinds of span.
+type OperationQueryParameters struct {
+	ServiceName string
+	SpanKind    string
+}
+
+// TraceQueryParameters contains parameters of a trace query.
+type TraceQueryParameters struct {
+	ServiceName   string
+	OperationName string
+	Tags          map[string]string
+	StartTimeMin  time.Time
+	StartTimeMax  time.Time
+	DurationMin   time.Duration
+	DurationMax   time.Duration
+	SearchDepth   uint32
+	// Filter is the structured query filter (RFC 0005), which carries the same kinds of
+	// predicate as the fields above and is mutually exclusive with them. It is the storage
+	// API's own expression tree rather than a translation of it, because the tree is what the
+	// reader lowers into the Elasticsearch query and a second encoding of it would earn
+	// nothing.
+	Filter *expression.Call
+}
+
+// SpanQueryParameters contains parameters of a span search (RFC 0016). Filter and OrderBy are
+// the entities from the storage API that the reader lowers into the Elasticsearch query.
+// OrderBy holds the terms the caller asked the results to be ordered by in priority order.
+// Cursor is a continuation the reader returned in SpanPage.NextCursor; nil starts from the beginning.
+type SpanQueryParameters struct {
+	StartTimeMin time.Time
+	StartTimeMax time.Time
+	Filter       *expression.Call
+	OrderBy      []tracestore.SpanSortOrder
+	PageSize     int
+	Cursor       []byte
+}
+
+// SpanPage is one page of a span search.
+// NextCursor is a cursor that can be used to request additional pages of results when they exist,
+// and is empty when the page is the last one.
+type SpanPage struct {
+	Spans      []Span
+	NextCursor []byte
+}

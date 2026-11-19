@@ -4,13 +4,18 @@
 package grpc
 
 import (
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 
+	"github.com/jaegertracing/jaeger/internal/headerforwarding"
 	"github.com/jaegertracing/jaeger/internal/tenancy"
 )
+
+var _ confmap.Unmarshaler = (*Config)(nil)
 
 type Config struct {
 	configgrpc.ClientConfig `mapstructure:",squash"`
@@ -18,7 +23,13 @@ type Config struct {
 	// If not defined the main endpoint is used for reads and writes.
 	Writer configgrpc.ClientConfig `mapstructure:"writer"`
 
-	Tenancy                      tenancy.Options `mapstructure:"multi_tenancy"`
+	// MaxRecvMsgSizeMiB is the maximum message size in MiB the client can receive.
+	// Defaults to 4 MiB (gRPC default). Set to a larger value when the storage
+	// backend returns responses exceeding 4 MiB (e.g. large traces).
+	MaxRecvMsgSizeMiB int `mapstructure:"max_recv_msg_size_mib"`
+
+	Tenancy                      tenancy.Options                    `mapstructure:"multi_tenancy"`
+	HeaderForwarding             []headerforwarding.ForwardedHeader `mapstructure:"header_forwarding"`
 	exporterhelper.TimeoutConfig `mapstructure:",squash"`
 }
 
@@ -28,4 +39,14 @@ func DefaultConfig() Config {
 			Timeout: time.Duration(5 * time.Second),
 		},
 	}
+}
+
+// Unmarshal preserves grpc-go's historical case-insensitive balancer lookup for existing configurations.
+func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
+	if err := conf.Unmarshal(cfg); err != nil {
+		return err
+	}
+	cfg.BalancerName = strings.ToLower(cfg.BalancerName)
+	cfg.Writer.BalancerName = strings.ToLower(cfg.Writer.BalancerName)
+	return nil
 }

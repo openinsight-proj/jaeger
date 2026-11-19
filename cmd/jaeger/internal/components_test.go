@@ -30,6 +30,15 @@ func TestComponents(t *testing.T) {
 
 	_, jaegerReceiverFactoryExists := factories.Receivers[component.MustNewType("jaeger")]
 	assert.True(t, jaegerReceiverFactoryExists)
+	assert.Contains(t, factories.Receivers, component.MustNewType("skywalking"))
+	assert.Contains(t, factories.Receivers, component.MustNewType("fluentforward"))
+	assert.Contains(t, factories.Exporters, component.MustNewType("elasticsearch"))
+	assert.Contains(t, factories.Exporters, component.MustNewType("loadbalancing"))
+	assert.Contains(t, factories.Exporters, component.MustNewType("prometheusremotewrite"))
+	assert.Contains(t, factories.Exporters, component.MustNewType("sumologic"))
+	assert.Contains(t, factories.Processors, component.MustNewType("transform"))
+	assert.Contains(t, factories.Processors, component.MustNewType("probabilistic_sampler"))
+	assert.Contains(t, factories.Connectors, component.MustNewType("servicegraph"))
 }
 
 func TestGetOtelcolFactories(t *testing.T) {

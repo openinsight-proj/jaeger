@@ -5,7 +5,6 @@ package disabled
 
 import (
 	"context"
-	"time"
 
 	"github.com/jaegertracing/jaeger/internal/proto-gen/api_v2/metrics"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore"
@@ -13,7 +12,7 @@ import (
 
 type (
 	// MetricsReader represents a "disabled" metricstore.Reader implementation where
-	// the METRICS_STORAGE_TYPE has not been set.
+	// no metrics backend is configured.
 	MetricsReader struct{}
 
 	// errMetricsQueryDisabledError is the error returned by disabledMetricsQueryService.
@@ -24,7 +23,7 @@ type (
 var ErrDisabled = &errMetricsQueryDisabledError{}
 
 func (*errMetricsQueryDisabledError) Error() string {
-	return "metrics querying is currently disabled"
+	return "trace metrics are currently disabled - no metrics backend configured"
 }
 
 // NewMetricsReader returns a new Disabled MetricsReader.
@@ -45,9 +44,4 @@ func (*MetricsReader) GetCallRates(context.Context, *metricstore.CallRateQueryPa
 // GetErrorRates gets the error rate metrics for the given set of error rate query parameters.
 func (*MetricsReader) GetErrorRates(context.Context, *metricstore.ErrorRateQueryParameters) (*metrics.MetricFamily, error) {
 	return nil, ErrDisabled
-}
-
-// GetMinStepDuration gets the minimum step duration (the smallest possible duration between two data points in a time series) supported.
-func (*MetricsReader) GetMinStepDuration(context.Context, *metricstore.MinStepDurationQueryParameters) (time.Duration, error) {
-	return 0, ErrDisabled
 }

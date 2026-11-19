@@ -10,6 +10,13 @@ REPO_ROOT="$UTILS_DIR/../.."
 # Define list of test files explicitly here , to be dynamic to the location of the test file
 TEST_FILES=(
     "$UTILS_DIR/compute-tags.test.sh"
+    "$UTILS_DIR/retry.test.sh"
+    "$UTILS_DIR/resolve-demo-snapshot-tags.test.sh"
+    "$REPO_ROOT/scripts/release/release.test.sh"
+    "$REPO_ROOT/examples/otel-demo/deploy-all.test.sh"
+    "$REPO_ROOT/examples/otel-demo/jaeger-values.test.sh"
+    "$REPO_ROOT/examples/otel-demo/opensearch-expand-volume.test.sh"
+    "$REPO_ROOT/examples/otel-demo/opensearch-recovery.test.sh"
     "$REPO_ROOT/internal/storage/v1/cassandra/schema/create.test.sh"
 )
 
@@ -19,9 +26,9 @@ run_test_file() {
         echo "Error: Test file not found: $test_file"
         return 1
     fi
-    
+
     echo "Running tests from: $test_file"
-    
+
     export SHUNIT2="${SHUNIT2:?'SHUNIT2 environment variable must be set'}"
 
     bash "$test_file"
@@ -57,7 +64,7 @@ main() {
     echo "Total: $total"
     echo "Passed: $passed"
     echo "Failed: $((total - passed))"
-    
+
     if [ ${#failed_tests[@]} -gt 0 ]; then
         echo "Failed tests:"
         for test in "${failed_tests[@]}"; do

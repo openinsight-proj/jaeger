@@ -12,17 +12,20 @@
 name: CI Summary Report
 on:
   workflow_call:
+# Scorecard Token-Permissions: keep actions: write on the job that saves cache.
 permissions:
   contents: read
-  actions: write  # required for actions/cache save and gh run download
 
 jobs:
   summary-report:
     name: Summary Report
+    permissions:
+      contents: read
+      actions: write  # required for actions/cache save and gh run download
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ github.sha }}
 
@@ -36,20 +39,28 @@ jobs:
             --repo "${{ github.repository }}" --dir .artifacts
 
       - name: Install dependencies
-        run: python3 -m pip install prometheus-client
+        run: |
+          python3 -m pip install --require-hashes --no-deps --only-binary :all: -r .github/requirements/ci-requirements.txt
 
       - name: Compare metrics and generate summary
         id: compare-metrics
+        if: github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: bash ./scripts/e2e/metrics_summary.sh
 
       - name: Set up Go for coverage tools
         uses: ./.github/actions/setup-go
-        with:
-          go-version: 1.26.x
 
       - name: Install coverage tools
         run: make install-coverage-tools
+
+      # Fails the run when Codecov's after_n_builds threshold is no longer
+      # reachable, so that a stalled merge queue surfaces as a failing check here
+      # rather than as codecov/patch and codecov/project never being posted.
+      - name: Check coverage uploads against the Codecov threshold
+        run: python3 scripts/e2e/check_coverage_uploads.py .artifacts
 
       - name: Merge coverage profiles
         id: merge-coverage
@@ -117,8 +128,9 @@ jobs:
               failure_reasons+=("coverage ${CURRENT}% is below minimum ${MINIMUM}%")
             fi
 
-            # Gate 2: no regression vs main baseline
-            if [ -f .artifacts/baseline-coverage.txt ]; then
+            # Gate 2: no regression vs main baseline (PRs only — on main the commit is
+            # already merged and we are establishing the new baseline, not comparing).
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]] && [ -f .artifacts/baseline-coverage.txt ]; then
               BASELINE=$(cat .artifacts/baseline-coverage.txt)
               if [ -z "$BASELINE" ]; then
                 failure_reasons+=("baseline coverage file is empty; cannot perform regression check")
@@ -147,13 +159,16 @@ jobs:
       # All display text is constructed from this structured data by trusted publish-
       # workflow code running in the base repository context.
       #
+      # The artifact does not name a PR or commit. On a fork PR this job runs the
+      # fork's code, so anything it writes is attacker-controlled; the publish
+      # workflow takes the PR and commit from the workflow_run event instead.
+      #
       # metrics_snapshots is an array of per-snapshot change data (metric names and
       # counts) produced by metrics_summary.sh.  The publish workflow validates every
       # field before rendering (see sanitizeSnapshots in ci-summary-report-publish.js).
       - name: Save conclusions for publish workflow
         if: always()
         env:
-          PR_NUMBER:              ${{ github.event.pull_request.number }}
           METRICS_CONCLUSION:     ${{ steps.compare-metrics.outputs.CONCLUSION }}
           METRICS_TOTAL:          ${{ steps.compare-metrics.outputs.TOTAL_CHANGES }}
           METRICS_INFRA_ERRORS:   ${{ steps.compare-metrics.outputs.INFRA_ERRORS }}
@@ -208,11 +223,7 @@ jobs:
           except (FileNotFoundError, json.JSONDecodeError, ValueError):
               pass
 
-          pr_number_env = os.environ.get('PR_NUMBER')
-          pr_number = int(pr_number_env) if pr_number_env else None
-
           data = {
-              'pr_number':               pr_number,
               'metrics_conclusion':      metrics_conclusion,
               'metrics_total_changes':   metrics_total,
               'metrics_has_infra_errors': has_infra_errors,
@@ -256,8 +267,9 @@ jobs:
           path: .artifacts/baseline-coverage.txt
           key: coverage-baseline_${{ github.run_id }}
 
-      # Fail the job (and the calling CI Orchestrator run) so the coverage/metrics
-      # regression is immediately visible in the PR Checks table.
+      # Fail the job (and the calling CI Orchestrator run) for blocking gates.
+      # Metric diffs are informational on PRs, but missing metrics diff artifacts
+      # still fail via the metrics conclusion because they indicate an infra issue.
       # The ci-summary artifact is already uploaded above (if: always()), so
       # ci-summary-report-publish.yml can still post the PR comment and check runs.
       - name: Fail if coverage or metrics gate failed

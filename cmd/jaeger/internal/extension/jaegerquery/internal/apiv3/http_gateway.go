@@ -4,23 +4,24 @@
 package apiv3
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"strconv"
-	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/proto"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger-idl/model/v1"
 	"github.com/jaegertracing/jaeger/cmd/jaeger/internal/extension/jaegerquery/querysvc"
+	"github.com/jaegertracing/jaeger/components/extension/jaegerquery/queryinterceptor"
 	"github.com/jaegertracing/jaeger/internal/jiter"
 	"github.com/jaegertracing/jaeger/internal/jptrace"
 	"github.com/jaegertracing/jaeger/internal/proto/api_v3"
@@ -30,23 +31,13 @@ import (
 )
 
 const (
-	paramTraceID        = "trace_id" // get trace by ID
-	paramStartTime      = "start_time"
-	paramEndTime        = "end_time"
-	paramRawTraces      = "raw_traces"
-	paramServiceName    = "query.service_name" // find traces
-	paramOperationName  = "query.operation_name"
-	paramTimeMin        = "query.start_time_min"
-	paramTimeMax        = "query.start_time_max"
-	paramNumTraces      = "query.num_traces"
-	paramDurationMin    = "query.duration_min"
-	paramDurationMax    = "query.duration_max"
-	paramQueryRawTraces = "query.raw_traces"
-
 	routeGetTrace      = "/api/v3/traces/{" + paramTraceID + "}"
 	routeFindTraces    = "/api/v3/traces"
+	routeFindSummaries = "/api/v3/trace-summaries"
+	routeFindSpans     = "/api/v3/spans"
 	routeGetServices   = "/api/v3/services"
 	routeGetOperations = "/api/v3/operations"
+	routeCapabilities  = "/api/v3/capabilities"
 )
 
 // HTTPGateway exposes APIv3 HTTP endpoints.
@@ -61,8 +52,11 @@ type HTTPGateway struct {
 func (h *HTTPGateway) RegisterRoutes(router *http.ServeMux) {
 	h.addRoute(router, h.getTrace, routeGetTrace, http.MethodGet)
 	h.addRoute(router, h.findTraces, routeFindTraces, http.MethodGet)
+	h.addRoute(router, h.findTraceSummaries, routeFindSummaries, http.MethodGet)
+	h.addRoute(router, h.findSpans, routeFindSpans, http.MethodGet)
 	h.addRoute(router, h.getServices, routeGetServices, http.MethodGet)
 	h.addRoute(router, h.getOperations, routeGetOperations, http.MethodGet)
+	h.addRoute(router, h.getCapabilities, routeCapabilities, http.MethodGet)
 }
 
 // addRoute adds a new endpoint to the router with given path and handler function.
@@ -88,6 +82,15 @@ func (h *HTTPGateway) tryHandleError(w http.ResponseWriter, err error, statusCod
 	if errors.Is(err, spanstore.ErrTraceNotFound) {
 		statusCode = http.StatusNotFound
 	}
+	if errors.Is(err, errors.ErrUnsupported) {
+		// The query is well formed, but this deployment's storage cannot serve it.
+		statusCode = http.StatusNotImplemented
+	} else if errors.Is(err, tracestore.ErrInvalidQuery) {
+		statusCode = http.StatusBadRequest
+	}
+	if errors.Is(err, queryinterceptor.ErrAccessDenied) {
+		statusCode = http.StatusForbidden
+	}
 	if statusCode == http.StatusInternalServerError {
 		h.Logger.Error("HTTP handler, Internal Server Error", zap.Error(err))
 	}
@@ -110,15 +113,15 @@ func (h *HTTPGateway) tryParamError(w http.ResponseWriter, err error, paramName 
 	return h.tryHandleError(w, fmt.Errorf("malformed parameter %s: %w", paramName, err), http.StatusBadRequest)
 }
 
-func (h *HTTPGateway) returnTrace(td ptrace.Traces, w http.ResponseWriter) {
+func (h *HTTPGateway) returnTrace(td ptrace.Traces, w http.ResponseWriter, r *http.Request) {
 	tracesData := jptrace.TracesData(td)
 	response := &api_v3.GRPCGatewayWrapper{
 		Result: &tracesData,
 	}
-	h.marshalResponse(response, w)
+	h.marshalResponse(response, w, r)
 }
 
-func (h *HTTPGateway) returnTraces(traces []ptrace.Traces, err error, w http.ResponseWriter) {
+func (h *HTTPGateway) returnTraces(traces []ptrace.Traces, err error, w http.ResponseWriter, r *http.Request) {
 	if h.tryHandleError(w, err, http.StatusInternalServerError) {
 		return
 	}
@@ -143,16 +146,49 @@ func (h *HTTPGateway) returnTraces(traces []ptrace.Traces, err error, w http.Res
 			resource.CopyTo(combinedTrace.ResourceSpans().AppendEmpty())
 		}
 	}
-	h.returnTrace(combinedTrace, w)
+	h.returnTrace(combinedTrace, w, r)
 }
 
-func (*HTTPGateway) marshalResponse(response proto.Message, w http.ResponseWriter) {
-	_ = new(jsonpb.Marshaler).Marshal(w, response)
+const paramPrettyPrint = "prettyPrint"
+
+// writeJSON writes the output of marshal, indented as the v1 HTTP API does when prettyPrint is
+// set to anything but "false". jsonpb.Marshaler.Indent is not enough: TracesData marshals itself.
+func writeJSON(w http.ResponseWriter, r *http.Request, marshal func(io.Writer)) {
+	w.Header().Set("Content-Type", "application/json")
+	if v := r.URL.Query().Get(paramPrettyPrint); v == "" || v == "false" {
+		marshal(w)
+		return
+	}
+	var compact, indented bytes.Buffer
+	marshal(&compact)
+	out := compact.Bytes()
+	if err := json.Indent(&indented, out, "", "    "); err == nil {
+		out = indented.Bytes()
+	}
+	_, _ = w.Write(out)
+}
+
+func (*HTTPGateway) marshalResponse(response proto.Message, w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, func(out io.Writer) {
+		_ = new(jsonpb.Marshaler).Marshal(out, response)
+	})
+}
+
+// marshalResultWrappedResponse writes response as jsonpb, wrapped in {"result": …} at the JSON
+// level rather than the proto level: unlike the trace endpoints, whose GRPCGatewayWrapper types
+// its result field as TracesData, there is no proto message typed to carry this RPC's response
+// as a wrapped result, so the envelope is applied to the marshaled bytes directly (RFC 0018 §6.1).
+func (*HTTPGateway) marshalResultWrappedResponse(response proto.Message, w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, func(out io.Writer) {
+		_, _ = io.WriteString(out, `{"result":`)
+		_ = new(jsonpb.Marshaler).Marshal(out, response)
+		_, _ = io.WriteString(out, `}`)
+	})
 }
 
 func (h *HTTPGateway) getTrace(w http.ResponseWriter, r *http.Request) {
 	traceIDVar := r.PathValue(paramTraceID)
-	traceID, err := model.TraceIDFromString(traceIDVar)
+	traceID, err := TraceIDFromString(traceIDVar)
 	if h.tryParamError(w, err, paramTraceID) {
 		return
 	}
@@ -163,103 +199,90 @@ func (h *HTTPGateway) getTrace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
-	http_query := r.URL.Query()
-	startTime := http_query.Get(paramStartTime)
-	if startTime != "" {
-		timeParsed, err := time.Parse(time.RFC3339Nano, startTime)
-		if h.tryParamError(w, err, paramStartTime) {
+	q := r.URL.Query()
+	if startTime, paramName := getQueryParam(q, paramStartTime, paramStartTimeDeprecated); startTime != "" {
+		timeParsed, err := parseTimeQueryParam(startTime, paramName)
+		if h.tryHandleError(w, err, http.StatusBadRequest) {
 			return
 		}
 		request.TraceIDs[0].Start = timeParsed.UTC()
 	}
-	endTime := http_query.Get(paramEndTime)
-	if endTime != "" {
-		timeParsed, err := time.Parse(time.RFC3339Nano, endTime)
-		if h.tryParamError(w, err, paramEndTime) {
+	if endTime, paramName := getQueryParam(q, paramEndTime, paramEndTimeDeprecated); endTime != "" {
+		timeParsed, err := parseTimeQueryParam(endTime, paramName)
+		if h.tryHandleError(w, err, http.StatusBadRequest) {
 			return
 		}
 		request.TraceIDs[0].End = timeParsed.UTC()
 	}
-	if r := http_query.Get(paramRawTraces); r != "" {
-		rawTraces, err := strconv.ParseBool(r)
-		if h.tryParamError(w, err, paramRawTraces) {
+	if rawStr, paramName := getQueryParam(q, paramRawTraces, paramRawTracesDeprecated); rawStr != "" {
+		rawTraces, err := strconv.ParseBool(rawStr)
+		if h.tryParamError(w, err, paramName) {
 			return
 		}
 		request.RawTraces = rawTraces
 	}
 	getTracesIter := h.QueryService.GetTraces(r.Context(), request)
 	trc, err := jiter.FlattenWithErrors(getTracesIter)
-	h.returnTraces(trc, err, w)
+	h.returnTraces(trc, err, w, r)
 }
 
 func (h *HTTPGateway) findTraces(w http.ResponseWriter, r *http.Request) {
-	queryParams, shouldReturn := h.parseFindTracesQuery(r.URL.Query(), w)
-	if shouldReturn {
+	queryParams, err := parseFindTracesQuery(r.URL.Query())
+	if h.tryHandleError(w, err, http.StatusBadRequest) {
 		return
 	}
 
 	findTracesIter := h.QueryService.FindTraces(r.Context(), *queryParams)
 	traces, err := jiter.FlattenWithErrors(findTracesIter)
-	h.returnTraces(traces, err, w)
+	h.returnTraces(traces, err, w, r)
 }
 
-func (h *HTTPGateway) parseFindTracesQuery(q url.Values, w http.ResponseWriter) (*querysvc.TraceQueryParams, bool) {
-	queryParams := &querysvc.TraceQueryParams{
-		TraceQueryParams: tracestore.TraceQueryParams{
-			ServiceName:   q.Get(paramServiceName),
-			OperationName: q.Get(paramOperationName),
-			Attributes:    pcommon.NewMap(), // most curiously not supported by grpc-gateway
-		},
+func (h *HTTPGateway) findTraceSummaries(w http.ResponseWriter, r *http.Request) {
+	queryParams, err := parseFindTracesQuery(r.URL.Query())
+	if h.tryHandleError(w, err, http.StatusBadRequest) {
+		return
+	}
+	// Summaries always use adjusted, aggregated data; raw_traces has no effect here.
+	queryParams.RawTraces = false
+	summariesIter := h.QueryService.FindTraceSummaries(r.Context(), *queryParams)
+	var summaries []tracestore.TraceSummary
+	var nextPageToken string
+	for chunk, err := range summariesIter {
+		if h.tryHandleError(w, err, http.StatusInternalServerError) {
+			return
+		}
+		summaries = append(summaries, chunk.Results...)
+		nextPageToken = chunk.NextPageToken
+	}
+	h.marshalResponse(&api_v3.FindTraceSummariesResponse{
+		Summaries:     toProtoTraceSummaries(summaries),
+		NextPageToken: nextPageToken,
+	}, w, r)
+}
+
+func (h *HTTPGateway) findSpans(w http.ResponseWriter, r *http.Request) {
+	queryParams, err := parseFindSpansQuery(r.URL.Query())
+	if h.tryHandleError(w, err, http.StatusBadRequest) {
+		return
 	}
 
-	timeMin := q.Get(paramTimeMin)
-	timeMax := q.Get(paramTimeMax)
-	if timeMin == "" || timeMax == "" {
-		err := fmt.Errorf("%s and %s are required", paramTimeMin, paramTimeMax)
-		h.tryHandleError(w, err, http.StatusBadRequest)
-		return nil, true
-	}
-	timeMinParsed, err := time.Parse(time.RFC3339Nano, timeMin)
-	if h.tryParamError(w, err, paramTimeMin) {
-		return nil, true
-	}
-	timeMaxParsed, err := time.Parse(time.RFC3339Nano, timeMax)
-	if h.tryParamError(w, err, paramTimeMax) {
-		return nil, true
-	}
-	queryParams.StartTimeMin = timeMinParsed
-	queryParams.StartTimeMax = timeMaxParsed
-
-	if n := q.Get(paramNumTraces); n != "" {
-		numTraces, err := strconv.Atoi(n)
-		if h.tryParamError(w, err, paramNumTraces) {
-			return nil, true
+	spansIter := h.QueryService.FindSpans(r.Context(), *queryParams)
+	// TODO: the response should be streamed back to the client
+	// https://github.com/jaegertracing/jaeger/issues/6467
+	combined := ptrace.NewTraces()
+	var nextPageToken string
+	for chunk, err := range spansIter {
+		if h.tryHandleError(w, err, http.StatusInternalServerError) {
+			return
 		}
-		queryParams.SearchDepth = numTraces
+		jptrace.MergeTraces(combined, chunk.Results)
+		nextPageToken = string(chunk.NextPageToken)
 	}
-
-	if d := q.Get(paramDurationMin); d != "" {
-		dur, err := time.ParseDuration(d)
-		if h.tryParamError(w, err, paramDurationMin) {
-			return nil, true
-		}
-		queryParams.DurationMin = dur
-	}
-	if d := q.Get(paramDurationMax); d != "" {
-		dur, err := time.ParseDuration(d)
-		if h.tryParamError(w, err, paramDurationMax) {
-			return nil, true
-		}
-		queryParams.DurationMax = dur
-	}
-	if r := q.Get(paramQueryRawTraces); r != "" {
-		rawTraces, err := strconv.ParseBool(r)
-		if h.tryParamError(w, err, paramQueryRawTraces) {
-			return nil, true
-		}
-		queryParams.RawTraces = rawTraces
-	}
-	return queryParams, false
+	tracesData := jptrace.TracesData(combined)
+	h.marshalResultWrappedResponse(&api_v3.FindSpansResponse{
+		Spans:         &tracesData,
+		NextPageToken: nextPageToken,
+	}, w, r)
 }
 
 func (h *HTTPGateway) getServices(w http.ResponseWriter, r *http.Request) {
@@ -272,14 +295,15 @@ func (h *HTTPGateway) getServices(w http.ResponseWriter, r *http.Request) {
 	}
 	h.marshalResponse(&api_v3.GetServicesResponse{
 		Services: services,
-	}, w)
+	}, w, r)
 }
 
 func (h *HTTPGateway) getOperations(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
+	q := r.URL.Query()
+	spanKind, _ := getQueryParam(q, paramSpanKind, paramSpanKindDeprecated)
 	queryParams := tracestore.OperationQueryParams{
-		ServiceName: query.Get("service"),
-		SpanKind:    query.Get("span_kind"),
+		ServiceName: q.Get("service"),
+		SpanKind:    spanKind,
 	}
 	operations, err := h.QueryService.GetOperations(r.Context(), queryParams)
 	if h.tryHandleError(w, err, http.StatusInternalServerError) {
@@ -296,5 +320,41 @@ func (h *HTTPGateway) getOperations(w http.ResponseWriter, r *http.Request) {
 			SpanKind: spanKind,
 		}
 	}
-	h.marshalResponse(&api_v3.GetOperationsResponse{Operations: apiOperations}, w)
+	h.marshalResponse(&api_v3.GetOperationsResponse{Operations: apiOperations}, w, r)
+}
+
+// TraceIDFromString parses a trace ID from either a hex string or a base64 string.
+// It supports both standard and URL-safe base64, with or without padding.
+func TraceIDFromString(s string) (model.TraceID, error) {
+	traceID, err := model.TraceIDFromString(s)
+	if err == nil {
+		return traceID, nil
+	}
+	// 128-bit trace ID = 24 base64 chars with padding, 22 without.
+	if len(s) > 24 {
+		return model.TraceID{}, err
+	}
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.RawURLEncoding,
+	}
+	for _, enc := range encodings {
+		if b, b64Err := enc.DecodeString(s); b64Err == nil {
+			return model.TraceIDFromBytes(b)
+		}
+	}
+	return model.TraceID{}, err
+}
+
+// getCapabilities serves GET /api/v3/capabilities, the HTTP binding of
+// api_v3.Capabilities.GetCapabilities. A reader that cannot report answers 501 through
+// tryHandleError, since its error wraps errors.ErrUnsupported.
+func (h *HTTPGateway) getCapabilities(w http.ResponseWriter, r *http.Request) {
+	caps, err := h.QueryService.SearchCapabilities(r.Context())
+	if h.tryHandleError(w, err, http.StatusInternalServerError) {
+		return
+	}
+	h.marshalResponse(&api_v3.GetCapabilitiesResponse{Search: toSearchCapabilities(caps)}, w, r)
 }

@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/olivere/elastic/v7"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.uber.org/zap"
 
-	esmetrics "github.com/jaegertracing/jaeger/internal/metrics"
 	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/config"
+	"github.com/jaegertracing/jaeger/internal/storage/elasticsearch/indices"
+	esquery "github.com/jaegertracing/jaeger/internal/storage/elasticsearch/query"
 	"github.com/jaegertracing/jaeger/internal/storage/v1/api/metricstore"
 )
 
@@ -24,12 +26,40 @@ var commonTimeRange = TimeRange{
 	endTimeMillis:           2000,
 }
 
-// Test helper functions
-func setupTestQB() *QueryBuilder {
-	return NewQueryBuilder(nil, config.Configuration{Tags: config.TagsAsFields{DotReplacement: "_"}}, zap.NewNop())
+// testIndicesConfig returns a config with deliberately different Spans and Services
+// index settings so that tests will catch any mix-up between the two.
+var testIndicesConfig = config.Indices{
+	IndexPrefix: "test-jaeger",
+	Spans: config.SpanIndexOptions{IndexOptions: config.IndexOptions{
+		DateLayout:        configoptional.Some("2006-01-02"),
+		RolloverFrequency: configoptional.Some("day"),
+	}},
+	Services: config.IndexOptions{
+		DateLayout:        configoptional.Some("2006-01-02-15"),
+		RolloverFrequency: configoptional.Some("hour"),
+	},
 }
 
-func testAggregationStructure(t *testing.T, agg elastic.Aggregation, expectedInterval string, validateSubAggs func(map[string]any)) {
+func testSpanRotation() indices.Rotation {
+	return indices.NewPeriodicRotation(
+		testIndicesConfig.IndexPrefix.Apply(config.SpanIndexName),
+		testIndicesConfig.Spans.GetDateLayout(),
+		config.RolloverFrequencyDuration(testIndicesConfig.Spans.GetRolloverFrequency()),
+	)
+}
+
+// Test helper functions
+func setupTestQB() *QueryBuilder {
+	indicesCfg := testIndicesConfig
+	indicesCfg.Spans.Tags = config.TagsAsFields{
+		DotReplacement: "_",
+	}
+	return NewQueryBuilder(nil, config.Configuration{
+		Indices: indicesCfg,
+	}, testSpanRotation())
+}
+
+func testAggregationStructure(t *testing.T, agg esquery.Aggregation, expectedInterval string, validateSubAggs func(map[string]any)) {
 	src, err := agg.Source()
 	require.NoError(t, err)
 
@@ -107,7 +137,7 @@ func TestBuildTimeSeriesAggQuery(t *testing.T) {
 		Step:             &step,
 		GroupByOperation: false,
 	}
-	subAgg := elastic.NewCumulativeSumAggregation()
+	subAgg := esquery.NewCumulativeSumAggregation()
 
 	agg := qb.buildTimeSeriesAggQuery(params, commonTimeRange, "test_sub_agg", subAgg)
 	require.NotNil(t, agg)
@@ -119,7 +149,9 @@ func TestBuildTimeSeriesAggQuery(t *testing.T) {
 }
 
 func TestExecute(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var requestPath string
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		sendResponse(t, w, mockEsValidResponse)
@@ -127,18 +159,23 @@ func TestExecute(t *testing.T) {
 	defer mockServer.Close()
 
 	cfg := &config.Configuration{
-		Indices:  config.Indices{IndexPrefix: "test-jaeger"},
+		Indices:  testIndicesConfig,
 		Servers:  []string{mockServer.URL},
 		LogLevel: "debug",
 	}
-	client := clientProvider(t, cfg, zap.NewNop(), esmetrics.NullFactory)
-	qb := NewQueryBuilder(client, *cfg, zap.NewNop())
+	client := clientProvider(t, cfg, zap.NewNop())
+	qb := NewQueryBuilder(client, *cfg, testSpanRotation())
 
-	boolQuery := elastic.NewBoolQuery()
-	aggQuery := elastic.NewDateHistogramAggregation().Field("startTimeMillis").FixedInterval("60000ms")
+	boolQuery := esquery.NewBoolQuery()
+	aggQuery := esquery.NewDateHistogramAggregation().Field("startTimeMillis").FixedInterval("60000ms")
 
-	result, err := qb.Execute(context.Background(), *boolQuery, aggQuery, TimeRange{endTimeMillis: 0, startTimeMillis: 0})
+	// Use epoch zero — with daily layout (Spans) this produces "1970-01-01",
+	// with hourly layout (Services) it would produce "1970-01-01-00".
+	result, err := qb.Execute(context.Background(), boolQuery, aggQuery, TimeRange{endTimeMillis: 0, startTimeMillis: 0})
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	// Assert the span index date layout (daily) was used, not the service layout (hourly).
+	assert.Contains(t, requestPath, "1970-01-01", "expected daily span index in path")
+	assert.NotContains(t, requestPath, "1970-01-01-00", "got hourly service index in path, should use span index")
 }
